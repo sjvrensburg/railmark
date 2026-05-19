@@ -18,8 +18,8 @@ A .NET command-line tool that extracts annotations from PDFs reviewed in [RailRe
 
 ## Prerequisites
 
-- [.NET 9+](https://dotnet.microsoft.com/download)
-- [RailReader2 CLI](https://github.com/sjvrensburg/railreader2) installed and accessible
+- [.NET 10+](https://dotnet.microsoft.com/download)
+- [RailReader2 CLI](https://github.com/sjvrensburg/railreader2) **v3.12.0.0 or later** installed and accessible (earlier versions lack the `export` and `vlm` subcommands used by `--export` and `--context`)
 
 ## Setup
 

@@ -7,13 +7,19 @@ public record AnnotationExport(
     [property: JsonPropertyName("exported_at")] string? ExportedAt,
     [property: JsonPropertyName("page_count")] int PageCount,
     [property: JsonPropertyName("outline")] List<OutlineEntry> Outline,
-    [property: JsonPropertyName("pages")] List<AnnotatedPage> Pages
+    [property: JsonPropertyName("pages")] List<AnnotatedPage> Pages,
+    [property: JsonPropertyName("bookmarks")] List<Bookmark>? Bookmarks = null
 );
 
 public record OutlineEntry(
     [property: JsonPropertyName("title")] string Title,
     [property: JsonPropertyName("page")] int Page,
     [property: JsonPropertyName("children")] List<OutlineEntry> Children
+);
+
+public record Bookmark(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("page")] int Page
 );
 
 public record AnnotatedPage(

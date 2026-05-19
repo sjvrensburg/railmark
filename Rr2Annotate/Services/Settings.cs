@@ -39,9 +39,9 @@ public class Settings
         Console.WriteLine();
         Console.WriteLine("Enter the command or path to the RailReader2 CLI.");
         Console.WriteLine("Examples:");
-        Console.WriteLine("  railreader-cli");
-        Console.WriteLine("  /home/user/bin/railreader-cli");
-        Console.WriteLine("  /opt/railreader2/RailReader2.Cli");
+        Console.WriteLine("  railreader2-cli");
+        Console.WriteLine("  /home/user/bin/railreader2-cli");
+        Console.WriteLine("  /opt/railreader2-cli/railreader2-cli");
         Console.WriteLine();
 
         while (true)
