@@ -682,6 +682,91 @@ public class MarkdownBuilderTests
         Assert.Contains("Check this", md);
     }
 
+    [Fact]
+    public void TextNote_Uses_Contents_As_Fallback_When_NoteText_Empty()
+    {
+        // Adobe Acrobat stores reviewer comments in the /Contents PDF field,
+        // leaving note_text empty. The output should show the Contents.
+        var export = MakeExport(
+            outline: [new("Chapter 1", 0, [])],
+            pages: [new(0, 595, 842, [
+                new TextNoteAnnotation
+                {
+                    Type = "text_note", Color = "#FFCC00", Opacity = 0.9,
+                    OverlappingBlocks = [], NearestHeading = Heading("Chapter 1", 0),
+                    X = 100, Y = 200, NoteText = "",
+                    Contents = "This needs rephrasing"
+                }
+            ])]);
+
+        var md = new MarkdownBuilder(export).Build();
+
+        Assert.Contains("**Note:** This needs rephrasing", md);
+    }
+
+    [Fact]
+    public void TextNote_Prefers_NoteText_Over_Contents()
+    {
+        // When both fields are populated, NoteText takes priority.
+        var export = MakeExport(
+            outline: [new("Chapter 1", 0, [])],
+            pages: [new(0, 595, 842, [
+                new TextNoteAnnotation
+                {
+                    Type = "text_note", Color = "#FFCC00", Opacity = 0.9,
+                    OverlappingBlocks = [], NearestHeading = Heading("Chapter 1", 0),
+                    X = 100, Y = 200, NoteText = "Primary note text",
+                    Contents = "Fallback contents"
+                }
+            ])]);
+
+        var md = new MarkdownBuilder(export).Build();
+
+        Assert.Contains("**Note:** Primary note text", md);
+        Assert.DoesNotContain("Fallback contents", md);
+    }
+
+    [Fact]
+    public void Highlight_Shows_Comment_From_Contents()
+    {
+        var export = MakeExport(
+            outline: [new("Chapter 1", 0, [])],
+            pages: [new(0, 595, 842, [
+                new HighlightAnnotation
+                {
+                    Type = "highlight", Color = "#FF0", Opacity = 0.5,
+                    OverlappingBlocks = [], NearestHeading = Heading("Chapter 1", 0),
+                    Rects = [new(50, 50, 100, 10)], Text = "highlighted phrase",
+                    Contents = "rephrase"
+                }
+            ])]);
+
+        var md = new MarkdownBuilder(export).Build();
+
+        Assert.Contains("**highlighted phrase**", md);
+        Assert.Contains("**Comment:** rephrase", md);
+    }
+
+    [Fact]
+    public void Highlight_Without_Contents_Shows_No_Comment()
+    {
+        var export = MakeExport(
+            outline: [new("Chapter 1", 0, [])],
+            pages: [new(0, 595, 842, [
+                new HighlightAnnotation
+                {
+                    Type = "highlight", Color = "#FF0", Opacity = 0.5,
+                    OverlappingBlocks = [], NearestHeading = Heading("Chapter 1", 0),
+                    Rects = [new(50, 50, 100, 10)], Text = "just a highlight"
+                }
+            ])]);
+
+        var md = new MarkdownBuilder(export).Build();
+
+        Assert.Contains("**just a highlight**", md);
+        Assert.DoesNotContain("Comment:", md);
+    }
+
     private static int CountOccurrences(string text, string search)
     {
         int count = 0;

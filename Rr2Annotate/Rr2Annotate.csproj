@@ -8,7 +8,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>rr2annotate</ToolCommandName>
     <PackageId>Rr2Annotate</PackageId>
-    <Version>0.5.0</Version>
+    <Version>0.5.1</Version>
     <Description>Export RailReader2 PDF annotations as structured Markdown</Description>
   </PropertyGroup>
 

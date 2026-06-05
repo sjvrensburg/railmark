@@ -242,6 +242,13 @@ public class MarkdownBuilder
             sb.AppendLine($"> {blockText}");
         }
 
+        // Show reviewer comment (e.g. "rephrase", "what does this mean?")
+        if (!string.IsNullOrWhiteSpace(highlight.Contents))
+        {
+            sb.AppendLine($">");
+            sb.AppendLine($"> **Comment:** {highlight.Contents}");
+        }
+
         sb.AppendLine($">");
         sb.AppendLine($"> {GetEnrichedLabel(page, highlight, highlight.Type)}");
         sb.AppendLine();
@@ -252,7 +259,10 @@ public class MarkdownBuilder
     {
         EmitContextBlock(sb, suppressContext, blockText);
 
-        sb.AppendLine($"> **Note:** {note.NoteText}");
+        // Use Contents as fallback when NoteText is empty (Adobe Acrobat stores
+        // reviewer comments in the /Contents PDF field, not in the popup window).
+        var noteText = !string.IsNullOrWhiteSpace(note.NoteText) ? note.NoteText : note.Contents;
+        sb.AppendLine($"> **Note:** {noteText}");
         sb.AppendLine($">");
         sb.AppendLine($"> {GetEnrichedLabel(page, note, "note")}");
         sb.AppendLine();
@@ -319,6 +329,12 @@ public class MarkdownBuilder
         bool suppressContext, string? blockText)
     {
         EmitContextBlock(sb, suppressContext, blockText);
+
+        if (!string.IsNullOrWhiteSpace(caret.Contents))
+        {
+            sb.AppendLine($"> **Comment:** {caret.Contents}");
+            sb.AppendLine($">");
+        }
 
         sb.AppendLine($"> {GetEnrichedLabel(page, caret, "caret")}");
         sb.AppendLine();

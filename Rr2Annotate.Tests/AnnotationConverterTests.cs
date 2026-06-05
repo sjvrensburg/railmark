@@ -380,4 +380,40 @@ public class AnnotationConverterTests
         Assert.Single(export.Pages);
         Assert.IsType<HighlightAnnotation>(export.Pages[0].Annotations[0]);
     }
+
+    [Fact]
+    public void Deserializes_Contents_On_All_Types()
+    {
+        // Contents is the PDF /Contents field — reviewer comments
+        var highlightJson = """
+        {
+            "type": "highlight",
+            "color": "#FF0",
+            "opacity": 0.5,
+            "rects": [],
+            "overlapping_blocks": [],
+            "nearest_heading": null,
+            "contents": "rephrase this"
+        }
+        """;
+
+        var noteJson = """
+        {
+            "type": "text_note",
+            "color": "#FFD400",
+            "opacity": 0.9,
+            "x": 100, "y": 200,
+            "note_text": "",
+            "overlapping_blocks": [],
+            "nearest_heading": null,
+            "contents": "Needs more context"
+        }
+        """;
+
+        var highlight = JsonSerializer.Deserialize<Annotation>(highlightJson, Options);
+        Assert.Equal("rephrase this", highlight!.Contents);
+
+        var note = JsonSerializer.Deserialize<Annotation>(noteJson, Options);
+        Assert.Equal("Needs more context", note!.Contents);
+    }
 }

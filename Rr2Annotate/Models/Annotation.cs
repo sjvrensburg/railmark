@@ -11,6 +11,8 @@ public abstract record Annotation
     public required double Opacity { get; init; }
     public required List<LayoutBlock> OverlappingBlocks { get; init; }
     public required NearestHeading? NearestHeading { get; init; }
+    /// <summary>Reviewer comment (PDF <c>/Contents</c> field). Populated for all types.</summary>
+    public string? Contents { get; init; }
 
     /// <summary>Y-coordinate used for reading-order sorting.</summary>
     public abstract double SortY { get; }
@@ -63,7 +65,7 @@ public record CaretAnnotation : Annotation
 }
 
 /// <summary>
-/// Free-text annotation — visible text lives in the <c>contents</c> metadata field.
+/// Free-text annotation — visible text lives in the inherited <c>Contents</c> field.
 /// </summary>
 public record FreeTextAnnotation : Annotation
 {
@@ -71,8 +73,6 @@ public record FreeTextAnnotation : Annotation
     public required double Y { get; init; }
     public required double W { get; init; }
     public required double H { get; init; }
-    /// <summary>FreeText content (from the <c>contents</c> JSON field).</summary>
-    public required string? Contents { get; init; }
     public override double SortY => Y;
 }
 
@@ -99,13 +99,14 @@ public class AnnotationConverter : JsonConverter<Annotation>
         NearestHeading? heading = root.TryGetProperty("nearest_heading", out var h) && h.ValueKind != JsonValueKind.Null
             ? JsonSerializer.Deserialize<NearestHeading>(h.GetRawText(), options)
             : null;
+        var contents = root.TryGetProperty("contents", out var c) ? c.GetString() : null;
 
         return type switch
         {
             "highlight" or "underline" or "strikeout" or "squiggly" => new HighlightAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 Rects = JsonSerializer.Deserialize<List<HighlightRect>>(
                     root.GetProperty("rects").GetRawText(), options) ?? [],
                 Text = root.TryGetProperty("text", out var t) ? t.GetString() : null
@@ -113,7 +114,7 @@ public class AnnotationConverter : JsonConverter<Annotation>
             "text_note" => new TextNoteAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 X = root.GetProperty("x").GetDouble(),
                 Y = root.GetProperty("y").GetDouble(),
                 NoteText = root.GetProperty("note_text").GetString()!
@@ -121,7 +122,7 @@ public class AnnotationConverter : JsonConverter<Annotation>
             "rect" => new RectAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 X = root.GetProperty("x").GetDouble(),
                 Y = root.GetProperty("y").GetDouble(),
                 W = root.GetProperty("w").GetDouble(),
@@ -133,7 +134,7 @@ public class AnnotationConverter : JsonConverter<Annotation>
             "freehand" => new FreehandAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 Points = JsonSerializer.Deserialize<List<FreehandPoint>>(
                     root.GetProperty("points").GetRawText(), options) ?? [],
                 StrokeWidth = root.TryGetProperty("stroke_width", out var fsw) ? fsw.GetDouble() : 0
@@ -141,7 +142,7 @@ public class AnnotationConverter : JsonConverter<Annotation>
             "caret" => new CaretAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 X = root.GetProperty("x").GetDouble(),
                 Y = root.GetProperty("y").GetDouble(),
                 W = root.GetProperty("w").GetDouble(),
@@ -150,17 +151,16 @@ public class AnnotationConverter : JsonConverter<Annotation>
             "free_text" => new FreeTextAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading,
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents,
                 X = root.GetProperty("x").GetDouble(),
                 Y = root.GetProperty("y").GetDouble(),
                 W = root.GetProperty("w").GetDouble(),
-                H = root.GetProperty("h").GetDouble(),
-                Contents = root.TryGetProperty("contents", out var c) ? c.GetString() : null
+                H = root.GetProperty("h").GetDouble()
             },
             _ => new UnknownAnnotation
             {
                 Type = type, Color = color, Opacity = opacity,
-                OverlappingBlocks = blocks, NearestHeading = heading
+                OverlappingBlocks = blocks, NearestHeading = heading, Contents = contents
             }
         };
     }
