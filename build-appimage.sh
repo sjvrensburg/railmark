@@ -54,21 +54,13 @@ echo "  Output:      ${OUTPUT_DIR}"
 echo "  appimagetool: ${APPIMAGETOOL}"
 echo ""
 
-# 1. Publish self-contained
-echo "[1/4] Publishing self-contained linux-x64 binary..."
-dotnet publish "${PROJECT_DIR}" \
-    -c Release \
-    -r linux-x64 \
-    --self-contained true \
-    -p:PublishSingleFile=false \
-    -o "${APPDIR}/usr/bin"
-
-# 2. Scaffold AppDir
-echo "[2/4] Scaffolding AppDir..."
+# 1. Scaffold AppDir (clean slate)
+echo "[1/4] Scaffolding AppDir..."
 rm -rf "${APPDIR:?}"
 mkdir -p "${APPDIR}/usr/bin"
 
-# Re-publish into the right place (above may have reset it)
+# 2. Publish self-contained binary
+echo "[2/4] Publishing self-contained linux-x64 binary..."
 dotnet publish "${PROJECT_DIR}" \
     -c Release \
     -r linux-x64 \
@@ -114,14 +106,14 @@ if [[ -n "$INCLUDE_MODEL" ]]; then
     if [[ ! -f "$INCLUDE_MODEL" ]]; then
         echo "Warning: model file not found: ${INCLUDE_MODEL}" >&2
     else
-        echo "[2b] Bundling model: $(basename "${INCLUDE_MODEL}")"
+        echo "[3b] Bundling model: $(basename "${INCLUDE_MODEL}")"
         mkdir -p "${APPDIR}/models"
         cp "${INCLUDE_MODEL}" "${APPDIR}/models/"
     fi
 fi
 
 # 4. Build the AppImage
-echo "[3/4] Building AppImage..."
+echo "[4/4] Building AppImage..."
 mkdir -p "${OUTPUT_DIR}"
 VERSION=$(grep '<Version>' "${PROJECT_DIR}/Rr2Annotate.csproj" | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d '[:space:]')
 OUTPUT_FILE="${OUTPUT_DIR}/rr2annotate-${VERSION}-linux-x86_64.AppImage"
@@ -129,7 +121,7 @@ OUTPUT_FILE="${OUTPUT_DIR}/rr2annotate-${VERSION}-linux-x86_64.AppImage"
 ARCH=x86_64 "${APPIMAGETOOL}" "${APPDIR}" "${OUTPUT_FILE}" 2>&1
 
 echo ""
-echo "[4/4] Done."
+echo "Done."
 echo "  Output: ${OUTPUT_FILE}"
 echo "  Size:   $(du -sh "${OUTPUT_FILE}" | cut -f1)"
 echo ""

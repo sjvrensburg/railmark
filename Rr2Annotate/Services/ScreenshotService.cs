@@ -101,7 +101,8 @@ public static class ScreenshotService
         int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
         void Union(int a, int b) { parent[Find(a)] = Find(b); }
 
-        var bounds = new (float minX, float minY, float maxX, float maxY)[indices.Count];
+        // Nullable: zero-point strokes have no bounds and must not be merged with others.
+        var bounds = new (float minX, float minY, float maxX, float maxY)?[indices.Count];
         for (int i = 0; i < indices.Count; i++)
         {
             var fh = (FreehandAnnotation)annotations[indices[i]];
@@ -112,7 +113,8 @@ public static class ScreenshotService
 
         for (int i = 0; i < indices.Count; i++)
             for (int j = i + 1; j < indices.Count; j++)
-                if (Find(i) != Find(j) && BBoxDistance(bounds[i], bounds[j]) <= MergeDistancePt)
+                if (bounds[i].HasValue && bounds[j].HasValue &&
+                    Find(i) != Find(j) && BBoxDistance(bounds[i].Value, bounds[j].Value) <= MergeDistancePt)
                     Union(i, j);
 
         var groupMap = new Dictionary<int, List<int>>();
@@ -158,8 +160,10 @@ public static class ScreenshotService
 
     private static SKRectI? ToPixelRect(float x, float y, float w, float h, int bmpW, int bmpH)
     {
+        // PDF y-axis has origin at the bottom-left; bitmap y-axis has origin at the top-left.
+        // Flip: pixel top = bmpH - (y + h) * Scale
         var px = (int)(x * Scale) - PaddingPx;
-        var py = (int)(y * Scale) - PaddingPx;
+        var py = bmpH - (int)((y + h) * Scale) - PaddingPx;
         var pw = (int)(w * Scale) + PaddingPx * 2;
         var ph = (int)(h * Scale) + PaddingPx * 2;
 

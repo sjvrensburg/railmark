@@ -14,6 +14,7 @@ public class MarkdownBuilder
     private readonly Dictionary<int, string>? _pageTexts;
     private readonly Dictionary<(int page, int annotIdx), string>? _images;
     private readonly string? _imageRelDir;
+    private readonly Dictionary<int, (string text, int[] map)> _normPageCache = [];
 
     public MarkdownBuilder(
         AnnotationFile annotations,
@@ -39,9 +40,10 @@ public class MarkdownBuilder
         sb.AppendLine($"# Annotations: {_sourceName}");
         sb.AppendLine();
 
-        // Build heading index (DFS order = outline order)
+        // Build heading index (DFS order = outline order); deduplicate keys so a PDF
+        // with duplicate bookmark entries doesn't emit the same section twice.
         var headingOrder = new List<(string key, string title, int depth)>();
-        BuildHeadingIndex(_outline, 0, headingOrder);
+        BuildHeadingIndex(_outline, 0, headingOrder, []);
 
         // Flatten outline sorted by page for heading assignment
         var sortedHeadings = new List<(string key, int? page)>();
@@ -221,7 +223,7 @@ public class MarkdownBuilder
             var pageText = _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
-                var bolded = BoldHighlightInContext(pageText, highlightedText);
+                var bolded = BoldHighlightInContext(page, pageText, highlightedText);
                 sb.AppendLine($"> {bolded}");
             }
             else
@@ -279,11 +281,9 @@ public class MarkdownBuilder
             sb.AppendLine(">");
         }
 
-        if (!suppressImage)
-        {
-            sb.AppendLine($"> {GetLabel(page, "freehand")}");
-            sb.AppendLine();
-        }
+        // Always emit the label — merged strokes share an image but each still has a page location.
+        sb.AppendLine($"> {GetLabel(page, "freehand")}");
+        sb.AppendLine();
     }
 
     private void EmitCaret(StringBuilder sb, int page, CaretAnnotation caret)
@@ -337,7 +337,7 @@ public class MarkdownBuilder
         return $"*({string.Join(", ", parts)})*";
     }
 
-    private string BoldHighlightInContext(string pageText, string highlightText)
+    private string BoldHighlightInContext(int page, string pageText, string highlightText)
     {
         // Tier 1: exact match
         var idx = pageText.IndexOf(highlightText, StringComparison.OrdinalIgnoreCase);
@@ -348,8 +348,10 @@ public class MarkdownBuilder
                 + pageText[(idx + highlightText.Length)..];
         }
 
-        // Tier 2: fuzzy match (normalised whitespace)
-        var (normPage, pageMap) = NormalizeWithMap(pageText);
+        // Tier 2: fuzzy match (normalised whitespace) — cache per page to avoid O(highlights × pageLen)
+        if (!_normPageCache.TryGetValue(page, out var cached))
+            _normPageCache[page] = cached = NormalizeWithMap(pageText);
+        var (normPage, pageMap) = cached;
         var normHighlight = CleanText(highlightText);
 
         var normIdx = normPage.IndexOf(normHighlight, StringComparison.OrdinalIgnoreCase);
@@ -370,12 +372,15 @@ public class MarkdownBuilder
 
     private static void BuildHeadingIndex(
         List<OutlineEntry> entries, int depth,
-        List<(string key, string title, int depth)> order)
+        List<(string key, string title, int depth)> order,
+        HashSet<string> seen)
     {
         foreach (var entry in entries)
         {
-            order.Add((HeadingKey(entry.Title, entry.Page), entry.Title, depth));
-            BuildHeadingIndex(entry.Children, depth + 1, order);
+            var key = HeadingKey(entry.Title, entry.Page);
+            if (seen.Add(key))
+                order.Add((key, entry.Title, depth));
+            BuildHeadingIndex(entry.Children, depth + 1, order, seen);
         }
     }
 

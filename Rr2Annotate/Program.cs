@@ -133,10 +133,9 @@ if (exportMode)
     }
     else
     {
-        using var sw = new StringWriter();
+        using var sw = new StreamWriter(outputPath!, append: false, System.Text.Encoding.UTF8);
         await exporter.ExportAsync(pdfPath, sw, exportOptions,
             new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
-        File.WriteAllText(outputPath!, sw.ToString());
         Console.Error.WriteLine($"Written to: {outputPath}");
     }
     return 0;
@@ -145,7 +144,16 @@ if (exportMode)
 // --- Annotations mode ---
 Console.Error.WriteLine($"Extracting annotations from: {Path.GetFileName(pdfPath)}");
 
-var annotationFile = CompositeAnnotationStore.Default.Load(pdfPath);
+AnnotationFile? annotationFile;
+try
+{
+    annotationFile = CompositeAnnotationStore.Default.Load(pdfPath);
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"Error: Failed to load annotations: {ex.Message}");
+    return 1;
+}
 
 if (annotationFile == null || !annotationFile.Pages.Any(p => p.Value.Count > 0))
 {
@@ -183,13 +191,21 @@ var highlightTexts = new Dictionary<(int page, int annotIdx), string>();
 
 foreach (var (pageIdx, annotations) in annotationFile.Pages)
 {
-    var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx);
-    if (!string.IsNullOrEmpty(pageText.Text))
-        pageTexts[pageIdx] = pageText.Text;
+    PageText? pageText = null;
+    try
+    {
+        pageText = textService.ExtractPageText(pdf.PdfBytes, pageIdx);
+        if (!string.IsNullOrEmpty(pageText.Text))
+            pageTexts[pageIdx] = pageText.Text;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Warning: Could not extract text from page {pageIdx + 1}: {ex.Message}");
+    }
 
     for (int i = 0; i < annotations.Count; i++)
     {
-        if (annotations[i] is HighlightAnnotation highlight && highlight.Rects.Count > 0)
+        if (pageText != null && annotations[i] is HighlightAnnotation highlight && highlight.Rects.Count > 0)
         {
             var parts = highlight.Rects
                 .Select(r => pageText.ExtractTextInRect(r.X, r.Y, r.X + r.W, r.Y + r.H))

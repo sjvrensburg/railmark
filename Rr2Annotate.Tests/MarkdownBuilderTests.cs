@@ -166,6 +166,27 @@ public class MarkdownBuilderTests
         Assert.Contains("*(p. 21, freehand)*", md);
     }
 
+    [Fact]
+    public void Freehand_Merged_Group_Emits_Label_For_Each_Stroke()
+    {
+        var fh1 = new FreehandAnnotation { Color = "#F00", Points = [new(100, 200), new(110, 210)] };
+        var fh2 = new FreehandAnnotation { Color = "#F00", Points = [new(101, 201), new(111, 211)] };
+        var file = MakeFile([(5, [fh1, fh2])]);
+        // Share the same image path to simulate merged group (both keys point to same file)
+        var images = new Dictionary<(int, int), string>
+        {
+            [(5, 0)] = "/abs/imgs/annotation_001.png",
+            [(5, 1)] = "/abs/imgs/annotation_001.png",
+        };
+
+        var md = Build(file, [H("Ch", 5)], images: images, imageRelDir: "imgs").Build();
+
+        // Both strokes should have a label in the output
+        Assert.Equal(2, CountOccurrences(md, "*(p. 6, freehand)*"));
+        // Image embed should appear exactly once (second stroke is suppressed)
+        Assert.Equal(1, CountOccurrences(md, "![Freehand annotation"));
+    }
+
     // --- Caret / FreeText ---
 
     [Fact]
@@ -268,6 +289,19 @@ public class MarkdownBuilderTests
 
         Assert.Contains("## Other Annotations", md);
         Assert.Contains("orphan note", md);
+    }
+
+    [Fact]
+    public void Duplicate_Outline_Keys_Do_Not_Double_Emit_Section()
+    {
+        // Two outline entries with the same title+page produce one section in output.
+        var outline = new List<OutlineEntry> { H("Appendix", 10), H("Appendix", 10) };
+        var file = MakeFile([(10, [new TextNoteAnnotation { Color = "#FF0", X = 0, Y = 0, Text = "note" }])]);
+
+        var md = Build(file, outline).Build();
+
+        Assert.Equal(1, CountOccurrences(md, "## Appendix"));
+        Assert.Equal(1, CountOccurrences(md, "**Note:** note"));
     }
 
     // --- Summary ---
