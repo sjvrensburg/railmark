@@ -3,7 +3,7 @@ using RailReader.Core.Services;
 using RailReader.Renderer.Skia;
 using SkiaSharp;
 
-namespace Rr2Annotate.Services;
+namespace RailMark.Services;
 
 public static class ScreenshotService
 {

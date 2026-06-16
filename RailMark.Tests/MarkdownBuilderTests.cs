@@ -1,7 +1,7 @@
 using RailReader.Core.Models;
-using Rr2Annotate.Services;
+using RailMark.Services;
 
-namespace Rr2Annotate.Tests;
+namespace RailMark.Tests;
 
 public class MarkdownBuilderTests
 {

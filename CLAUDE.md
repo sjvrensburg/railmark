@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A .NET tool that extracts annotations from PDFs reviewed in RailReader2 and produces Markdown documents suitable for AI summarisation. Uses the **RailReader.Core NuGet packages** directly — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
+A .NET tool (**RailMark**) that converts PDFs to Markdown suitable for AI summarisation. Two modes: annotation mode extracts annotations from PDFs reviewed in RailReader2; export mode (`--export`) produces layout-aware full-document Markdown from any PDF. Uses the **RailReader.Core NuGet packages** directly — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
 
 ## Build & Test
 
 - **Build:** `dotnet build`
 - **Test:** `dotnet test`
 - **Single test:** `dotnet test --filter "FullyQualifiedName~TestName"`
-- **Run:** `dotnet run --project Rr2Annotate/ -- <pdf> [-o output.md] [--pages] [--color] [--images] [--export]`
+- **Run:** `dotnet run --project RailMark/ -- <pdf> [-o output.md] [--pages] [--color] [--images] [--export]`
 - **Pack (AppImage):** `./build-appimage.sh [--include-model <path>]`
 
-Solution file is `Rr2Annotate.slnx` (new XML `.slnx` format, not traditional `.sln`).
+Solution file is `RailMark.slnx` (new XML `.slnx` format, not traditional `.sln`).
 
 ## Architecture
 
-`Rr2Annotate/` is a .NET console app (top-level statements in `Program.cs`), `Rr2Annotate.Tests/` is the xUnit test project. All services are static classes — no dependency injection.
+`RailMark/` is a .NET console app (top-level statements in `Program.cs`), `RailMark.Tests/` is the xUnit test project. All services are static classes — no dependency injection.
 
 ### Pipeline (Program.cs)
 

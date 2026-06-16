@@ -1,5 +1,5 @@
 #!/bin/bash
-# AppRun — entry point for the rr2annotate AppImage.
+# AppRun — entry point for the railmark AppImage.
 # Sets up the environment so the self-contained .NET binary finds its native
 # libraries (libSkiaSharp.so, libpdfium.so, libonnxruntime*.so) and, optionally,
 # the bundled ONNX layout model.
@@ -14,4 +14,4 @@ export LD_LIBRARY_PATH="${HERE}/usr/bin:${LD_LIBRARY_PATH}"
 # bundled model (if present).
 export APPDIR="${HERE}"
 
-exec "${HERE}/usr/bin/rr2annotate" "$@"
+exec "${HERE}/usr/bin/railmark" "$@"

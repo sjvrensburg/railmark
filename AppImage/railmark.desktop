@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=railmark
+Exec=railmark
+Icon=railmark
+Categories=Utility;
+Comment=Convert PDFs to structured Markdown
+Terminal=true
+NoDisplay=false

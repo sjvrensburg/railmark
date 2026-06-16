@@ -1,7 +1,7 @@
 using System.Text;
 using RailReader.Core.Models;
 
-namespace Rr2Annotate.Services;
+namespace RailMark.Services;
 
 public class MarkdownBuilder
 {

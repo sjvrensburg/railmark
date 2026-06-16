@@ -2,7 +2,7 @@ using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Export;
 using RailReader.Renderer.Skia;
-using Rr2Annotate.Services;
+using RailMark.Services;
 
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
@@ -323,9 +323,9 @@ static List<int> ParsePageRange(string range, int maxPage)
 static void PrintUsage()
 {
     Console.WriteLine("""
-        rr2annotate — Export RailReader2 annotations as Markdown
+        railmark — Convert PDFs to structured Markdown
 
-        Usage: rr2annotate <pdf> [options]
+        Usage: railmark <pdf> [options]
 
         Options:
           -o <path>            Output file (default: <pdf-stem>-annotations.md). Use - for stdout

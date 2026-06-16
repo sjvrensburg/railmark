@@ -10,25 +10,25 @@ green='\033[0;32m'
 yellow='\033[0;33m'
 reset='\033[0m'
 
-info()  { echo -e "${bold}rr2annotate install:${reset} $*"; }
+info()  { echo -e "${bold}railmark install:${reset} $*"; }
 ok()    { echo -e "${green}✔${reset} $*"; }
 warn()  { echo -e "${yellow}⚠${reset} $*"; }
 
 mkdir -p "$INSTALL_DIR"
 
-# --- rr2annotate ---
+# --- railmark ---
 
-if [ -x "$INSTALL_DIR/rr2annotate" ]; then
-    warn "rr2annotate already installed. Reinstalling v${VERSION}."
+if [ -x "$INSTALL_DIR/railmark" ]; then
+    warn "railmark already installed. Reinstalling v${VERSION}."
 fi
 
-info "Downloading rr2annotate v${VERSION}..."
-curl -fsSL "https://github.com/sjvrensburg/rr2parser/releases/download/v${VERSION}/rr2annotate-${VERSION}-linux-x64.tar.gz" \
-    | tar xz -C "$INSTALL_DIR" Rr2Annotate libSkiaSharp.so
+info "Downloading railmark v${VERSION}..."
+curl -fsSL "https://github.com/sjvrensburg/railmark/releases/download/v${VERSION}/railmark-${VERSION}-linux-x64.tar.gz" \
+    | tar xz -C "$INSTALL_DIR" railmark libSkiaSharp.so
 
-chmod +x "$INSTALL_DIR/Rr2Annotate"
-ln -sf "$INSTALL_DIR/Rr2Annotate" "$INSTALL_DIR/rr2annotate"
-ok "rr2annotate v${VERSION} → $INSTALL_DIR/rr2annotate"
+chmod +x "$INSTALL_DIR/railmark"
+ln -sf "$INSTALL_DIR/railmark" "$INSTALL_DIR/railmark"
+ok "railmark v${VERSION} → $INSTALL_DIR/railmark"
 
 # --- RailReader2 CLI ---
 
@@ -42,9 +42,9 @@ else
     ok "RailReader2 CLI → $INSTALL_DIR/railreader2-cli"
 fi
 
-# --- Write config so rr2annotate doesn't prompt on first run ---
+# --- Write config so railmark doesn't prompt on first run (NOTE: current builds no longer read this config) ---
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/rr2annotate"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/railmark"
 mkdir -p "$CONFIG_DIR"
 cat > "$CONFIG_DIR/settings.json" <<EOF
 {"CliCommand":"$INSTALL_DIR/railreader2-cli"}
@@ -63,4 +63,4 @@ else
     echo ""
 fi
 
-ok "Done! Usage: rr2annotate <pdf>"
+ok "Done! Usage: railmark <pdf>"

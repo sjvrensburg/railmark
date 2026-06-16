@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="RailMark.Tests/RailMark.Tests.csproj" />
+  <Project Path="RailMark/RailMark.csproj" />
+</Solution>

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-appimage.sh — Build a self-contained rr2annotate AppImage for Linux x86-64.
+# build-appimage.sh — Build a self-contained railmark AppImage for Linux x86-64.
 #
 # Usage:
 #   ./build-appimage.sh [--include-model <model-file>]
@@ -19,8 +19,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${SCRIPT_DIR}/Rr2Annotate"
-APPDIR="${SCRIPT_DIR}/build/Rr2Annotate.AppDir"
+PROJECT_DIR="${SCRIPT_DIR}/RailMark"
+APPDIR="${SCRIPT_DIR}/build/RailMark.AppDir"
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
 
 APPIMAGETOOL="${APPIMAGETOOL:-}"
@@ -47,7 +47,7 @@ if [[ -z "$APPIMAGETOOL" ]]; then
     fi
 fi
 
-echo "=== Building rr2annotate AppImage ==="
+echo "=== Building railmark AppImage ==="
 echo "  Project:     ${PROJECT_DIR}"
 echo "  AppDir:      ${APPDIR}"
 echo "  Output:      ${OUTPUT_DIR}"
@@ -75,14 +75,14 @@ dotnet publish "${PROJECT_DIR}" \
 # are also discoverable.
 
 # appimagetool wants the desktop file and icon at the top level of AppDir.
-cp "${SCRIPT_DIR}/AppImage/rr2annotate.desktop" "${APPDIR}/"
+cp "${SCRIPT_DIR}/AppImage/railmark.desktop" "${APPDIR}/"
 cp "${SCRIPT_DIR}/AppImage/AppRun"              "${APPDIR}/"
 chmod +x "${APPDIR}/AppRun"
 
 # Icon: use the RailReader2 icon if available, else create a minimal placeholder.
 ICON_SRC="${HOME}/bin/railreader2.png"
 if [[ -f "$ICON_SRC" ]]; then
-    cp "$ICON_SRC" "${APPDIR}/rr2annotate.png"
+    cp "$ICON_SRC" "${APPDIR}/railmark.png"
 else
     # Tiny 16x16 placeholder so appimagetool doesn't complain
     python3 -c "
@@ -96,9 +96,9 @@ row = b'\x00' + b'\x80\x80\x80' * 16
 raw = b''.join(b'\x00' + b'\x80\x80\x80' * 16 for _ in range(16))
 idat = png_chunk(b'IDAT', zlib.compress(b''.join(b'\x00' + b'\x80\x80\x80' * 16 for _ in range(16))))
 iend = png_chunk(b'IEND', b'')
-with open('${APPDIR}/rr2annotate.png', 'wb') as f:
+with open('${APPDIR}/railmark.png', 'wb') as f:
     f.write(sig + ihdr + idat + iend)
-" 2>/dev/null || touch "${APPDIR}/rr2annotate.png"
+" 2>/dev/null || touch "${APPDIR}/railmark.png"
 fi
 
 # 3. Bundle optional ONNX model
@@ -115,8 +115,8 @@ fi
 # 4. Build the AppImage
 echo "[4/4] Building AppImage..."
 mkdir -p "${OUTPUT_DIR}"
-VERSION=$(grep '<Version>' "${PROJECT_DIR}/Rr2Annotate.csproj" | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d '[:space:]')
-OUTPUT_FILE="${OUTPUT_DIR}/rr2annotate-${VERSION}-linux-x86_64.AppImage"
+VERSION=$(grep '<Version>' "${PROJECT_DIR}/RailMark.csproj" | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d '[:space:]')
+OUTPUT_FILE="${OUTPUT_DIR}/railmark-${VERSION}-linux-x86_64.AppImage"
 
 ARCH=x86_64 "${APPIMAGETOOL}" "${APPDIR}" "${OUTPUT_FILE}" 2>&1
 
@@ -126,5 +126,5 @@ echo "  Output: ${OUTPUT_FILE}"
 echo "  Size:   $(du -sh "${OUTPUT_FILE}" | cut -f1)"
 echo ""
 echo "Install by copying to ~/bin/ or any directory in \$PATH:"
-echo "  cp '${OUTPUT_FILE}' ~/bin/rr2annotate"
-echo "  chmod +x ~/bin/rr2annotate"
+echo "  cp '${OUTPUT_FILE}' ~/bin/railmark"
+echo "  chmod +x ~/bin/railmark"

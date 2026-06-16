@@ -6,15 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>rr2annotate</ToolCommandName>
-    <PackageId>Rr2Annotate</PackageId>
+    <ToolCommandName>railmark</ToolCommandName>
+    <PackageId>RailMark</PackageId>
     <Version>0.6.1</Version>
-    <Description>Export RailReader2 PDF annotations as structured Markdown — standalone, no external CLI required</Description>
-    <AssemblyName>rr2annotate</AssemblyName>
+    <Description>Convert any PDF to structured Markdown — layout-aware export plus RailReader2 annotation extraction. Standalone, no external CLI required.</Description>
+    <AssemblyName>railmark</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Rr2Annotate.Tests" />
+    <InternalsVisibleTo Include="RailMark.Tests" />
   </ItemGroup>
 
   <ItemGroup>

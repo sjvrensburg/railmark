@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=rr2annotate
-Exec=rr2annotate
-Icon=rr2annotate
-Categories=Utility;
-Comment=Export RailReader2 PDF annotations as structured Markdown
-Terminal=true
-NoDisplay=false
