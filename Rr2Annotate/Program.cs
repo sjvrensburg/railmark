@@ -129,13 +129,13 @@ if (exportMode)
     if (stdoutMode)
     {
         await exporter.ExportAsync(pdfPath, Console.Out, exportOptions,
-            new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
+            progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
     }
     else
     {
         using var sw = new StreamWriter(outputPath!, append: false, System.Text.Encoding.UTF8);
         await exporter.ExportAsync(pdfPath, sw, exportOptions,
-            new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
+            progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
         Console.Error.WriteLine($"Written to: {outputPath}");
     }
     return 0;

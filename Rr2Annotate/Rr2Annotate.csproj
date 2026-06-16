@@ -18,9 +18,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="RailReader.Export" Version="0.28.0" />
-    <PackageReference Include="RailReader.Renderer.Skia" Version="0.28.0" />
-    <PackageReference Include="RailReader.Core.Analysis" Version="0.28.0" />
+    <PackageReference Include="RailReader.Export" Version="0.31.0" />
+    <PackageReference Include="RailReader.Renderer.Skia" Version="0.31.0" />
+    <PackageReference Include="RailReader.Core.Analysis" Version="0.31.0" />
   </ItemGroup>
 
 </Project>
