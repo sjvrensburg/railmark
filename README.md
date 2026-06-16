@@ -9,13 +9,19 @@ Built directly on the [RailReader.Core](https://github.com/sjvrensburg/RailReade
 
 ## Install
 
-Linux (x86-64, no .NET required) — download the AppImage from [Releases](https://github.com/sjvrensburg/railmark/releases), then:
+Linux (x86-64, no .NET required):
 
 ```bash
-chmod +x railmark-*-linux-x86_64.AppImage
-mv railmark-*-linux-x86_64.AppImage ~/bin/railmark   # any directory on $PATH
+bash <(curl -fsSL https://raw.githubusercontent.com/sjvrensburg/railmark/main/install.sh)
+```
+
+This downloads the self-contained AppImage to `~/.local/bin/railmark`. Then:
+
+```bash
 railmark document.pdf -o notes.md
 ```
+
+Or grab the AppImage manually from [Releases](https://github.com/sjvrensburg/railmark/releases) and put it anywhere on your `$PATH`.
 
 <details>
 <summary>Build from source</summary>

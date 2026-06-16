@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.7.0"
 INSTALL_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-RR2_VERSION="v3.23.0.0"
+ASSET="railmark-${VERSION}-linux-x86_64.AppImage"
+URL="https://github.com/sjvrensburg/railmark/releases/download/v${VERSION}/${ASSET}"
 
 bold='\033[1m'
 green='\033[0;32m'
@@ -17,39 +18,17 @@ warn()  { echo -e "${yellow}⚠${reset} $*"; }
 mkdir -p "$INSTALL_DIR"
 
 # --- railmark ---
+# Self-contained AppImage — bundles the .NET runtime and all native libraries
+# (libpdfium, libSkiaSharp, libonnxruntime). No external CLI or config required.
 
 if [ -x "$INSTALL_DIR/railmark" ]; then
     warn "railmark already installed. Reinstalling v${VERSION}."
 fi
 
 info "Downloading railmark v${VERSION}..."
-curl -fsSL "https://github.com/sjvrensburg/railmark/releases/download/v${VERSION}/railmark-${VERSION}-linux-x64.tar.gz" \
-    | tar xz -C "$INSTALL_DIR" railmark libSkiaSharp.so
-
+curl -fsSL "$URL" -o "$INSTALL_DIR/railmark"
 chmod +x "$INSTALL_DIR/railmark"
-ln -sf "$INSTALL_DIR/railmark" "$INSTALL_DIR/railmark"
 ok "railmark v${VERSION} → $INSTALL_DIR/railmark"
-
-# --- RailReader2 CLI ---
-
-if [ -x "$INSTALL_DIR/railreader2-cli" ]; then
-    warn "RailReader2 CLI already installed. Skipping."
-else
-    info "Downloading RailReader2 CLI ${RR2_VERSION}..."
-    curl -fsSL "https://github.com/sjvrensburg/railreader2/releases/download/${RR2_VERSION}/railreader2-cli-linux-x64.tar.gz" \
-        | tar xz -C "$INSTALL_DIR"
-    ln -sf "$INSTALL_DIR/RailReader2.Cli" "$INSTALL_DIR/railreader2-cli"
-    ok "RailReader2 CLI → $INSTALL_DIR/railreader2-cli"
-fi
-
-# --- Write config so railmark doesn't prompt on first run (NOTE: current builds no longer read this config) ---
-
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/railmark"
-mkdir -p "$CONFIG_DIR"
-cat > "$CONFIG_DIR/settings.json" <<EOF
-{"CliCommand":"$INSTALL_DIR/railreader2-cli"}
-EOF
-ok "Config written to $CONFIG_DIR/settings.json"
 
 # --- PATH check ---
 
