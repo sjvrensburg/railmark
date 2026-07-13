@@ -8,7 +8,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>railmark</ToolCommandName>
     <PackageId>RailMark</PackageId>
-    <Version>0.7.0</Version>
+    <Version>0.7.1</Version>
     <Description>Convert any PDF to structured Markdown — layout-aware export plus RailReader2 annotation extraction. Standalone, no external CLI required.</Description>
     <AssemblyName>railmark</AssemblyName>
   </PropertyGroup>
@@ -18,9 +18,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="RailReader.Export" Version="0.31.0" />
-    <PackageReference Include="RailReader.Renderer.Skia" Version="0.31.0" />
-    <PackageReference Include="RailReader.Core.Analysis" Version="0.31.0" />
+    <PackageReference Include="RailReader.Export" Version="0.48.0" />
+    <PackageReference Include="RailReader.Renderer.Skia" Version="0.48.0" />
+    <PackageReference Include="RailReader.Core.Analysis" Version="0.48.0" />
   </ItemGroup>
 
 </Project>
