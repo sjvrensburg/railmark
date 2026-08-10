@@ -39,38 +39,53 @@ public static class MarkupPlanService
         string? password = null)
     {
         var file = existing ?? new AnnotationFile();
-        var result = new MarkupPlanApplyResult();
+        // Indexed by original plan position so the report preserves plan order regardless of
+        // how entries are grouped by page for batched geometry lookups.
+        var results = new MarkupEntryResult?[plan.Entries.Count];
 
-        foreach (var group in plan.Entries.GroupBy(e => e.Page))
+        var indexed = plan.Entries.Select((entry, index) => (entry, index));
+        foreach (var group in indexed.GroupBy(t => t.entry.Page))
         {
             var pageIndex = group.Key - 1;
             if (pageIndex < 0 || pageIndex >= pdf.PageCount)
             {
-                foreach (var entry in group)
-                    result.Entries.Add(new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Page {entry.Page} is out of range (document has {pdf.PageCount} pages)."));
+                foreach (var (entry, index) in group)
+                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
+                        $"Page {entry.Page} is out of range (document has {pdf.PageCount} pages).");
                 continue;
             }
 
             var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIndex, password);
 
-            foreach (var entry in group)
+            // Resolve every quote to a char range first, so geometry can be fetched in a single
+            // batched GetTextRangeRects call per page instead of one native call per entry.
+            var resolved = new List<(MarkupEntry entry, int index, int CharStart, int CharLength)>();
+            foreach (var (entry, index) in group)
             {
                 var range = TextLocator.ResolveQuote(pageText.Text, entry.Quote);
                 if (range is null)
                 {
-                    result.Entries.Add(new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Quote not found on page {entry.Page}."));
+                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
+                        $"Quote not found on page {entry.Page}.");
                     continue;
                 }
+                resolved.Add((entry, index, range.Value.CharStart, range.Value.CharLength));
+            }
 
-                var rectLines = textService.GetTextRangeRects(
-                    pdf.PdfBytes, pageIndex, [(range.Value.CharStart, range.Value.CharLength)], password);
-                var rects = MergeLineRects(rectLines.Count > 0 ? rectLines[0] : []);
+            if (resolved.Count == 0)
+                continue;
+
+            var rectLines = textService.GetTextRangeRects(
+                pdf.PdfBytes, pageIndex, resolved.Select(r => (r.CharStart, r.CharLength)).ToList(), password);
+
+            for (int i = 0; i < resolved.Count; i++)
+            {
+                var (entry, index, _, _) = resolved[i];
+                var rects = MergeLineRects(i < rectLines.Count ? rectLines[i] : []);
                 if (rects.Count == 0)
                 {
-                    result.Entries.Add(new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Quote matched on page {entry.Page} but produced no geometry."));
+                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
+                        $"Quote matched on page {entry.Page} but produced no geometry.");
                     continue;
                 }
 
@@ -79,10 +94,12 @@ public static class MarkupPlanService
                     file.Pages[pageIndex] = pageAnnotations = [];
                 pageAnnotations.Add(annotation);
 
-                result.Entries.Add(new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null));
+                results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null);
             }
         }
 
+        var result = new MarkupPlanApplyResult();
+        result.Entries.AddRange(results!);
         return (file, result);
     }
 

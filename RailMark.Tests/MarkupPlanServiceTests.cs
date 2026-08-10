@@ -134,6 +134,34 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
+    public void Resolve_Preserves_Plan_Order_In_Report_Across_Interleaved_Pages()
+    {
+        var plan = new MarkupPlan
+        {
+            Entries =
+            [
+                new() { Page = 1, Quote = "quick brown", Type = MarkupType.Highlight },
+                new() { Page = 2, Quote = "second page", Type = MarkupType.Highlight },
+                new() { Page = 1, Quote = "lazy dog", Type = MarkupType.Highlight },
+            ]
+        };
+        var pdf = new FakePdfService(pageCount: 2, pageSize: (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string>
+        {
+            [0] = "The quick brown fox jumps over the lazy dog.",
+            [1] = "This is the second page of text.",
+        });
+
+        var (_, result) = MarkupPlanService.Resolve(plan, pdf, text);
+
+        Assert.Equal(3, result.Entries.Count);
+        Assert.Equal("quick brown", result.Entries[0].Quote);
+        Assert.Equal("second page", result.Entries[1].Quote);
+        Assert.Equal("lazy dog", result.Entries[2].Quote);
+        Assert.All(result.Entries, e => Assert.True(e.Success));
+    }
+
+    [Fact]
     public void Resolve_Reports_Failure_For_OutOfRange_Page()
     {
         var plan = new MarkupPlan { Entries = [new() { Page = 5, Quote = "anything", Type = MarkupType.Highlight }] };
