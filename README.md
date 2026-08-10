@@ -1,9 +1,10 @@
 # RailMark
 
-A command-line tool that converts PDFs to structured Markdown. It has two modes:
+A command-line tool that converts PDFs to structured Markdown, and writes AI-authored markup back into them. It has three modes:
 
 - **Annotation mode** (default) — extracts annotations from PDFs reviewed in [RailReader2](https://github.com/sjvrensburg/railreader2) (highlights, notes, rectangles, freehand, carets, free-text) and groups them under document headings.
 - **Export mode** (`--export`) — produces layout-aware full-document Markdown from *any* PDF, with optional VLM transcription of figures. RailReader2 annotations are folded in when present, but are not required.
+- **Apply-markup mode** (`--apply-markup`) — writes real PDF annotations (highlight, underline, strikeout, squiggly, margin notes) from a JSON markup plan. Designed for an AI agent acting as a technical editor: quote a passage, say what kind of markup and why, and RailMark resolves the quote to exact PDF geometry and writes it in. See [Skill for AI agents](#skill-for-ai-agents) below.
 
 Built directly on the [RailReader.Core](https://github.com/sjvrensburg/RailReaderCore) NuGet packages — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
 
@@ -59,6 +60,7 @@ Build the AppImage:
 - Optional cropped screenshots for rectangle and freehand annotations
 - Page-range and colour filtering
 - `--export` mode for layout-aware full-document Markdown from any PDF, with optional VLM figure transcription
+- `--apply-markup` mode writes highlight/underline/strikeout/squiggly/note annotations into a PDF from a JSON plan, for AI-agent-driven document review
 
 ## Usage
 
@@ -75,6 +77,10 @@ Options:
   --vlm-endpoint <url> Override VLM endpoint URL (with --export)
   --vlm-model <name>   Override VLM model name (with --export)
   --vlm-api-key <key>  Override VLM API key (with --export)
+  --apply-markup <plan.json>
+                       Write PDF markup (highlight/underline/strikeout/note) from a
+                       JSON markup plan. Reports per-entry results as JSON on stdout.
+  --dry-run            With --apply-markup, resolve and report only; do not write
   -h, --help           Show this help
 ```
 
@@ -105,6 +111,50 @@ railmark document.pdf --color "ff0000,ffcc00"
 ```bash
 railmark document.pdf --export
 ```
+
+### Apply AI-authored markup
+
+```bash
+railmark document.pdf --apply-markup plan.json
+```
+
+`plan.json` is a JSON object listing markup entries — page, an exact quote to locate, the
+annotation type, and an optional comment:
+
+```json
+{
+  "entries": [
+    { "page": 3, "quote": "the null hypothesis is rejected at p < 0.01", "type": "highlight",
+      "comment": "Key statistical claim — verify against Table 2." },
+    { "page": 5, "quote": "heteroscedasticity", "type": "underline",
+      "comment": "Domain term — confirm reader familiarity." }
+  ]
+}
+```
+
+Each entry's `quote` must be an exact, verbatim substring of the PDF's extracted text (matching
+tolerates whitespace differences but not paraphrasing). RailMark resolves each quote to its
+precise on-page geometry and writes a real PDF annotation. Results are printed as JSON to
+stdout — one object per entry, `success`/`error` — so a driving script or agent can detect and
+retry any quote that didn't resolve. Use `--dry-run` to check a plan without writing anything.
+See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full schema.
+
+## Skill for AI agents
+
+For Claude Code / agent-driven document review, install the `railmark-markup-plan` skill from
+this repo:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r .claude/skills/railmark-markup-plan ~/.claude/skills/
+```
+
+(Or, working inside a clone of this repo, the skill is already available project-scoped at
+`.claude/skills/railmark-markup-plan/` — no copy needed.) It teaches an agent the full
+review-and-apply workflow — exporting the document, drafting a markup plan, the verbatim-quote
+requirement, editorial conventions for choosing highlight/underline/strikeout/note, and how to
+recover from failed quotes — and is the recommended way to drive `--apply-markup` from an agent
+rather than re-deriving the schema from scratch each time.
 
 ## Run tests
 
