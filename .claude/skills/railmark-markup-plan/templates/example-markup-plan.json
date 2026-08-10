@@ -1,0 +1,29 @@
+{
+  "entries": [
+    {
+      "page": 3,
+      "quote": "the null hypothesis is rejected at p < 0.01",
+      "type": "highlight",
+      "comment": "Key statistical claim — verify against Table 2."
+    },
+    {
+      "page": 3,
+      "quote": "approximately 40% of respondents",
+      "type": "strikeout",
+      "comment": "Contradicts the 37% figure reported in section 2.1.",
+      "color": "#FF0000"
+    },
+    {
+      "page": 5,
+      "quote": "heteroscedasticity",
+      "type": "underline",
+      "comment": "Domain term — confirm reader familiarity before publication."
+    },
+    {
+      "page": 5,
+      "quote": "the results generalize across all populations studied",
+      "type": "note",
+      "comment": "Strong claim; the study only covers a single-country sample — consider softening."
+    }
+  ]
+}

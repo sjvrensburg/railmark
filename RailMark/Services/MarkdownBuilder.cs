@@ -350,9 +350,9 @@ public class MarkdownBuilder
 
         // Tier 2: fuzzy match (normalised whitespace) — cache per page to avoid O(highlights × pageLen)
         if (!_normPageCache.TryGetValue(page, out var cached))
-            _normPageCache[page] = cached = NormalizeWithMap(pageText);
+            _normPageCache[page] = cached = TextLocator.NormalizeWithMap(pageText);
         var (normPage, pageMap) = cached;
-        var normHighlight = CleanText(highlightText);
+        var normHighlight = TextLocator.CleanText(highlightText);
 
         var normIdx = normPage.IndexOf(normHighlight, StringComparison.OrdinalIgnoreCase);
         if (normIdx >= 0 && normIdx + normHighlight.Length < pageMap.Length)
@@ -395,46 +395,5 @@ public class MarkdownBuilder
         }
     }
 
-    private static (string text, int[] map) NormalizeWithMap(string original)
-    {
-        var sb = new StringBuilder(original.Length);
-        var map = new int[original.Length + 1];
-        bool lastWasSpace = true;
-
-        for (int i = 0; i < original.Length; i++)
-        {
-            char c = original[i];
-
-            if (c == '­' || c == '' || c == '') continue;
-            if (char.IsControl(c) && c != '\n' && c != '\r' && c != '\t') continue;
-
-            if (char.IsWhiteSpace(c))
-            {
-                if (!lastWasSpace)
-                {
-                    map[sb.Length] = i;
-                    sb.Append(' ');
-                    lastWasSpace = true;
-                }
-            }
-            else
-            {
-                map[sb.Length] = i;
-                sb.Append(c);
-                lastWasSpace = false;
-            }
-        }
-
-        while (sb.Length > 0 && sb[sb.Length - 1] == ' ')
-            sb.Length--;
-        map[sb.Length] = original.Length;
-
-        return (sb.ToString(), map);
-    }
-
-    internal static string CleanText(string text)
-    {
-        var (result, _) = NormalizeWithMap(text);
-        return result;
-    }
+    internal static string CleanText(string text) => TextLocator.CleanText(text);
 }
