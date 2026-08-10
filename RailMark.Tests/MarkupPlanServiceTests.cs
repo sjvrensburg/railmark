@@ -162,6 +162,28 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
+    public void Resolve_Reports_SpanCount_On_Success_And_Zero_On_Failure()
+    {
+        var plan = new MarkupPlan
+        {
+            Entries =
+            [
+                new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight },
+                new() { Page = 1, Quote = "not in the text", Type = MarkupType.Highlight },
+            ],
+        };
+        var pdf = new FakePdfService(pageCount: 1, pageSize: (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." });
+
+        var (_, result) = MarkupPlanService.Resolve(plan, pdf, text);
+
+        Assert.True(result.Entries[0].Success);
+        Assert.Equal(1, result.Entries[0].SpanCount);
+        Assert.False(result.Entries[1].Success);
+        Assert.Equal(0, result.Entries[1].SpanCount);
+    }
+
+    [Fact]
     public void Resolve_Reports_Failure_For_OutOfRange_Page()
     {
         var plan = new MarkupPlan { Entries = [new() { Page = 5, Quote = "anything", Type = MarkupType.Highlight }] };

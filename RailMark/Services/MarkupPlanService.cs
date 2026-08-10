@@ -4,7 +4,7 @@ using RailReader.Core.Services;
 
 namespace RailMark.Services;
 
-public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Success, string? Error);
+public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0);
 
 public sealed class MarkupPlanApplyResult
 {
@@ -94,7 +94,7 @@ public static class MarkupPlanService
                     file.Pages[pageIndex] = pageAnnotations = [];
                 pageAnnotations.Add(annotation);
 
-                results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null);
+                results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null, SpanCount: rects.Count);
             }
         }
 

@@ -13,6 +13,12 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     return 0;
 }
 
+if (args.Contains("--version"))
+{
+    Console.WriteLine($"railmark {System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}");
+    return 0;
+}
+
 // Parse arguments
 string? pdfPath = null;
 string? outputPath = null;
@@ -449,6 +455,7 @@ static void PrintUsage()
                                Write PDF markup (highlight/underline/strikeout/note) from a
                                JSON markup plan. Reports per-entry results as JSON on stdout.
           --dry-run            With --apply-markup, resolve and report only; do not write
+          --version            Show the railmark version
           -h, --help           Show this help
         """);
 }

@@ -33,16 +33,21 @@ apply it.
 3. **Draft a markup plan JSON file** following `references/markup-plan-schema.md`. A worked
    example is at `templates/example-markup-plan.json`.
 
-4. **Apply it:**
+4. **Always dry-run the full plan first:**
    ```
-   railmark <pdf> --apply-markup plan.json
+   railmark <pdf> --apply-markup plan.json --dry-run
    ```
-   Add `--dry-run` first if you want to check every quote resolves before writing anything.
+   This is not optional — it's the cheap way to catch a plan where most quotes fail to resolve
+   before writing anything. Read the JSON result (see step 5) and fix any failures before
+   proceeding.
 
-5. **Read the JSON result printed to stdout.** Each entry reports `success` and, on failure, an
-   `error`. If any entry failed, don't retry the identical quote — re-read that page's exact
-   text (re-run `--export`, or re-open `notes.md` at that page) and correct the quote before
-   retrying just the failed entries.
+5. **Apply for real, then read the JSON result printed to stdout again.** Each entry reports
+   `success` and, on failure, an `error`. If any entry failed, don't retry the identical quote —
+   re-read that page's exact text (re-run `--export`, or re-open `notes.md` at that page) and
+   correct the quote before retrying just the failed entries. To fix a handful of failures
+   without duplicating the entries that already succeeded, run a second `--apply-markup` with a
+   plan containing **only** the corrected entries — applying is additive, so re-running the whole
+   plan would duplicate every already-successful annotation.
 
 ## The most important rule: quotes must be verbatim
 

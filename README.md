@@ -81,6 +81,7 @@ Options:
                        Write PDF markup (highlight/underline/strikeout/note) from a
                        JSON markup plan. Reports per-entry results as JSON on stdout.
   --dry-run            With --apply-markup, resolve and report only; do not write
+  --version            Show the railmark version
   -h, --help           Show this help
 ```
 
