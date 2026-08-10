@@ -1,0 +1,7 @@
+{
+  "entries": [
+    {"page": 1, "quote": "the specialwordmarker", "type": "underline", "comment": "single-line underline: line renders THROUGH the letters, not below the baseline", "author": "repro"},
+    {"page": 1, "quote": "produces the same outcome as flipping a coin", "type": "strikeout", "comment": "multi-line strikeout: only the FIRST visual line is struck; 'outcome as flipping a coin' on line 2 is silently missed", "author": "repro"},
+    {"page": 1, "quote": "produces the same outcome as flipping a coin", "type": "highlight", "comment": "for comparison: highlight spans BOTH lines correctly", "author": "repro"}
+  ]
+}
