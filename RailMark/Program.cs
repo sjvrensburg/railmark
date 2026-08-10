@@ -240,17 +240,29 @@ if (exportMode)
 
     var exporter = new MarkdownExportService(factory);
 
-    if (stdoutMode)
+    try
     {
-        await exporter.ExportAsync(pdfPath, Console.Out, exportOptions,
-            progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
+        if (stdoutMode)
+        {
+            await exporter.ExportAsync(pdfPath, Console.Out, exportOptions,
+                progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
+        }
+        else
+        {
+            using var sw = new StreamWriter(outputPath!, append: false, System.Text.Encoding.UTF8);
+            await exporter.ExportAsync(pdfPath, sw, exportOptions,
+                progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
+            Console.Error.WriteLine($"Written to: {outputPath}");
+        }
     }
-    else
+    catch (Exception ex)
     {
-        using var sw = new StreamWriter(outputPath!, append: false, System.Text.Encoding.UTF8);
-        await exporter.ExportAsync(pdfPath, sw, exportOptions,
-            progress: new Progress<ExportProgress>(p => Console.Error.WriteLine($"  {p.Status}")));
-        Console.Error.WriteLine($"Written to: {outputPath}");
+        // Per-page failures are already caught and inlined by MarkdownExportService, so
+        // reaching here means the export aborted outright (e.g. bad --pages range) rather than
+        // silently truncating — surface it clearly instead of a raw stack trace and a
+        // misleading exit code 0.
+        Console.Error.WriteLine($"Error: Export failed: {ex.Message}");
+        return 1;
     }
     return 0;
 }
