@@ -158,8 +158,20 @@ public static class MarkupPlanService
             };
         }
 
-        var highlightRects = rects
-            .Select(r => new HighlightRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top))
+        // Highlight/StrikeOut are drawn across the full glyph box, but Underline/Squiggly are a
+        // stroke beneath the text, so passing them the same full-height quad draws the line at
+        // cap-height and it reads as a strike-through instead of an underline (issue #13).
+        bool baselineBand = entry.Type is MarkupType.Underline or MarkupType.Squiggly;
+        var markupRects = rects
+            .Select(r =>
+            {
+                if (!baselineBand)
+                    return new HighlightRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+
+                var height = r.Bottom - r.Top;
+                var bandHeight = MathF.Max(2f, height * 0.15f);
+                return new HighlightRect(r.Left, r.Bottom - bandHeight, r.Right - r.Left, bandHeight);
+            })
             .ToList();
 
         TextMarkupAnnotation annotation = entry.Type switch
@@ -171,7 +183,7 @@ public static class MarkupPlanService
             _ => throw new ArgumentOutOfRangeException(nameof(entry), entry.Type, "Unhandled markup type."),
         };
 
-        annotation.Rects = highlightRects;
+        annotation.Rects = markupRects;
         annotation.Contents = entry.Comment;
         annotation.Color = color;
         annotation.Author = author;

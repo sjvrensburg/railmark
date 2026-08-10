@@ -197,6 +197,25 @@ public class MarkupPlanServiceTests
         Assert.NotEmpty(markup.Rects);
     }
 
+    [Theory]
+    [InlineData(MarkupType.Underline)]
+    [InlineData(MarkupType.Squiggly)]
+    public void Resolve_Draws_Underline_And_Squiggly_As_Thin_Band_Near_Baseline(MarkupType type)
+    {
+        var plan = new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = type }] };
+        var pdf = new FakePdfService(pageCount: 1, pageSize: (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." });
+
+        var (file, _) = MarkupPlanService.Resolve(plan, pdf, text);
+
+        var markup = Assert.IsAssignableFrom<TextMarkupAnnotation>(Assert.Single(file.Pages[0]));
+        var rect = Assert.Single(markup.Rects);
+        // Full glyph box from FakePdfTextService is Y=20..30 (H=10); the band must be a thin
+        // sliver sitting at the bottom of the box, not the full ascender-to-descender height.
+        Assert.True(rect.H < 10f, $"expected a thin baseline band, got H={rect.H}");
+        Assert.Equal(40f, rect.Y + rect.H, precision: 3);
+    }
+
     [Fact]
     public void Resolve_Applies_Default_Color_When_Omitted()
     {
