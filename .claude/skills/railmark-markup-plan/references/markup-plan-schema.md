@@ -27,6 +27,15 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 | `color`   | string | no       | Hex color (`#RRGGBB`). If omitted, a type-specific default is used: highlight `#FFFF00`, underline `#00AAFF`, strikeout `#FF0000`, squiggly `#FF8800`, note `#FFCC00`. |
 | `author`  | string | no       | Defaults to `"AI Reviewer"` if omitted. |
 
+## Output
+
+`--apply-markup` never touches the input PDF by default. It writes the marked-up document to a
+new file — `-o <path>`, or `<pdf-stem>-marked.pdf` if `-o` is omitted. Pass `--in-place` to write
+annotations directly into the input PDF instead (not recommended for the workflow in this skill —
+prefer letting each apply produce a fresh `-marked.pdf` so a botched or repeated run can't
+accumulate duplicate annotations in the source document). `-o -` (stdout) is not supported for
+`--apply-markup` since the output is a binary PDF, not text.
+
 ## Quote rules
 
 The `quote` field is the only link between your editorial judgment and the PDF's physical geometry — RailMark resolves it against the page's extracted text to find where to draw the markup. Rules:

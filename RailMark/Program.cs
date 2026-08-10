@@ -32,6 +32,7 @@ string? vlmModel = null;
 string? vlmApiKey = null;
 string? markupPlanPath = null;
 bool dryRun = false;
+bool inPlace = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -69,6 +70,9 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--dry-run":
             dryRun = true;
+            break;
+        case "--in-place":
+            inPlace = true;
             break;
         default:
             if (!args[i].StartsWith('-'))
@@ -115,6 +119,18 @@ if (dryRun && markupPlanPath == null)
     return 1;
 }
 
+if (inPlace && markupPlanPath == null)
+{
+    Console.Error.WriteLine("Error: --in-place is only valid with --apply-markup.");
+    return 1;
+}
+
+if (inPlace && outputPath != null)
+{
+    Console.Error.WriteLine("Error: --in-place cannot be combined with -o.");
+    return 1;
+}
+
 HashSet<string>? colorFilter = null;
 if (colorArg != null)
 {
@@ -126,7 +142,7 @@ if (colorArg != null)
     }
 }
 
-if (!stdoutMode)
+if (!stdoutMode && markupPlanPath == null)
     outputPath ??= exportMode
         ? Path.ChangeExtension(pdfPath, null) + "-export.md"
         : Path.ChangeExtension(pdfPath, null) + "-annotations.md";
@@ -162,6 +178,16 @@ if (markupPlanPath != null)
         return 1;
     }
 
+    if (outputPath == "-")
+    {
+        Console.Error.WriteLine("Error: -o - (stdout) is not supported with --apply-markup; PDF output must be a file.");
+        return 1;
+    }
+
+    string markupOutputPath = inPlace
+        ? pdfPath
+        : outputPath ?? Path.ChangeExtension(pdfPath, null) + "-marked.pdf";
+
     var markupPdf = factory.CreatePdfService(pdfPath);
     var markupTextService = new PdfTextService();
 
@@ -178,15 +204,31 @@ if (markupPlanPath != null)
 
     var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(plan, markupPdf, markupTextService, existing);
 
+    var incomingAuthors = plan.Entries
+        .Select(e => e.Author ?? "AI Reviewer")
+        .ToHashSet();
+    bool authorCollision = existing?.Pages.Values
+        .SelectMany(a => a)
+        .Any(a => a.Author != null && incomingAuthors.Contains(a.Author)) ?? false;
+    if (authorCollision)
+    {
+        Console.Error.WriteLine(
+            "Warning: the target already contains annotations by an author used in this plan — " +
+            "this may be a repeat run duplicating earlier markup.");
+    }
+
     if (!dryRun)
     {
+        if (markupOutputPath != pdfPath)
+            File.Copy(pdfPath, markupOutputPath, overwrite: true);
+
         CompositeAnnotationStore.Default.OnSidecarFallback = (path, reason) =>
             Console.Error.WriteLine($"Warning: {path} — falling back to sidecar storage ({reason}).");
 
         bool saved;
         try
         {
-            saved = CompositeAnnotationStore.Default.Save(pdfPath, annotationFileToSave);
+            saved = CompositeAnnotationStore.Default.Save(markupOutputPath, annotationFileToSave);
         }
         catch (Exception ex)
         {
@@ -199,6 +241,8 @@ if (markupPlanPath != null)
             Console.Error.WriteLine("Error: Failed to write annotations.");
             return 1;
         }
+
+        Console.Error.WriteLine($"Written to: {markupOutputPath}");
     }
 
     var reportOptions = new JsonSerializerOptions
@@ -465,7 +509,11 @@ static void PrintUsage()
           --vlm-api-key <key>  Override VLM API key (with --export)
           --apply-markup <plan.json>
                                Write PDF markup (highlight/underline/strikeout/note) from a
-                               JSON markup plan. Reports per-entry results as JSON on stdout.
+                               JSON markup plan into a new PDF (default: <pdf-stem>-marked.pdf,
+                               or -o <path>). The input PDF is never modified unless --in-place
+                               is given. Reports per-entry results as JSON on stdout.
+          --in-place           With --apply-markup, write annotations directly into the input
+                               PDF instead of a copy. Cannot be combined with -o.
           --dry-run            With --apply-markup, resolve and report only; do not write
           --version            Show the railmark version
           -h, --help           Show this help
