@@ -1,7 +1,10 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Export;
 using RailReader.Renderer.Skia;
+using RailMark.Models;
 using RailMark.Services;
 
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
@@ -21,6 +24,8 @@ bool noVlm = false;
 string? vlmEndpoint = null;
 string? vlmModel = null;
 string? vlmApiKey = null;
+string? markupPlanPath = null;
+bool dryRun = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -52,6 +57,12 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--vlm-api-key" when i + 1 < args.Length:
             vlmApiKey = args[++i];
+            break;
+        case "--apply-markup" when i + 1 < args.Length:
+            markupPlanPath = args[++i];
+            break;
+        case "--dry-run":
+            dryRun = true;
             break;
         default:
             if (!args[i].StartsWith('-'))
@@ -86,6 +97,18 @@ if (exportMode && (colorArg != null || includeImages))
     return 1;
 }
 
+if (markupPlanPath != null && (exportMode || colorArg != null || includeImages || pagesArg != null))
+{
+    Console.Error.WriteLine("Error: --apply-markup cannot be combined with --export, --color, --images, or --pages.");
+    return 1;
+}
+
+if (dryRun && markupPlanPath == null)
+{
+    Console.Error.WriteLine("Error: --dry-run is only valid with --apply-markup.");
+    return 1;
+}
+
 HashSet<string>? colorFilter = null;
 if (colorArg != null)
 {
@@ -105,6 +128,91 @@ if (!stdoutMode)
 // Initialise PDFium native library
 PdfiumResolver.Initialize();
 var factory = new SkiaPdfServiceFactory();
+
+// --- Apply-markup mode: write AI-authored PDF markup from a JSON plan ---
+if (markupPlanPath != null)
+{
+    if (!File.Exists(markupPlanPath))
+    {
+        Console.Error.WriteLine($"Error: Markup plan not found: {markupPlanPath}");
+        return 1;
+    }
+
+    MarkupPlan plan;
+    try
+    {
+        var planJson = await File.ReadAllTextAsync(markupPlanPath);
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() },
+        };
+        plan = JsonSerializer.Deserialize<MarkupPlan>(planJson, jsonOptions)
+            ?? throw new JsonException("Plan deserialized to null.");
+    }
+    catch (JsonException ex)
+    {
+        Console.Error.WriteLine($"Error: Invalid markup plan JSON: {ex.Message}");
+        return 1;
+    }
+
+    var markupPdf = factory.CreatePdfService(pdfPath);
+    var markupTextService = new PdfTextService();
+
+    AnnotationFile? existing;
+    try
+    {
+        existing = CompositeAnnotationStore.Default.Load(pdfPath);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error: Failed to load existing annotations: {ex.Message}");
+        return 1;
+    }
+
+    var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(plan, markupPdf, markupTextService, existing);
+
+    if (!dryRun)
+    {
+        CompositeAnnotationStore.Default.OnSidecarFallback = (path, reason) =>
+            Console.Error.WriteLine($"Warning: {path} — falling back to sidecar storage ({reason}).");
+
+        bool saved;
+        try
+        {
+            saved = CompositeAnnotationStore.Default.Save(pdfPath, annotationFileToSave);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error: Failed to write annotations: {ex.Message}");
+            return 1;
+        }
+
+        if (!saved)
+        {
+            Console.Error.WriteLine("Error: Failed to write annotations.");
+            return 1;
+        }
+    }
+
+    var reportOptions = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter() },
+    };
+    Console.Write(JsonSerializer.Serialize(applyResult.Entries, reportOptions));
+
+    int succeeded = applyResult.Entries.Count(e => e.Success);
+    Console.Error.WriteLine(
+        $"Applied {succeeded}/{applyResult.Entries.Count} markup entries" + (dryRun ? " (dry run)." : "."));
+    foreach (var failed in applyResult.Entries.Where(e => !e.Success))
+    {
+        var quote = failed.Quote.Length > 60 ? failed.Quote[..60] + "…" : failed.Quote;
+        Console.Error.WriteLine($"  FAILED page {failed.Page}: \"{quote}\" — {failed.Error}");
+    }
+
+    return applyResult.AllSucceeded ? 0 : 2;
+}
 
 // --- Export mode: delegate entirely to RailReader.Export pipeline ---
 if (exportMode)
@@ -337,6 +445,10 @@ static void PrintUsage()
           --vlm-endpoint <url> Override VLM endpoint URL (with --export)
           --vlm-model <name>   Override VLM model name (with --export)
           --vlm-api-key <key>  Override VLM API key (with --export)
+          --apply-markup <plan.json>
+                               Write PDF markup (highlight/underline/strikeout/note) from a
+                               JSON markup plan. Reports per-entry results as JSON on stdout.
+          --dry-run            With --apply-markup, resolve and report only; do not write
           -h, --help           Show this help
         """);
 }
