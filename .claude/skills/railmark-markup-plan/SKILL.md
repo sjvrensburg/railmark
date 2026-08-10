@@ -41,13 +41,16 @@ apply it.
    before writing anything. Read the JSON result (see step 5) and fix any failures before
    proceeding.
 
-5. **Apply for real, then read the JSON result printed to stdout again.** Each entry reports
-   `success` and, on failure, an `error`. If any entry failed, don't retry the identical quote —
-   re-read that page's exact text (re-run `--export`, or re-open `notes.md` at that page) and
-   correct the quote before retrying just the failed entries. To fix a handful of failures
-   without duplicating the entries that already succeeded, run a second `--apply-markup` with a
-   plan containing **only** the corrected entries — applying is additive, so re-running the whole
-   plan would duplicate every already-successful annotation.
+5. **Apply for real, then read the JSON result printed to stdout again.** By default this writes
+   a new file — `<pdf-stem>-marked.pdf`, or `-o <path>` to name it yourself — and never modifies
+   the input PDF. Each entry reports `success` and, on failure, an `error`. If any entry failed,
+   don't retry the identical quote — re-read that page's exact text (re-run `--export`, or
+   re-open `notes.md` at that page) and correct the quote before retrying just the failed
+   entries. To fix a handful of failures without duplicating the entries that already succeeded,
+   run a second `--apply-markup` with a plan containing **only** the corrected entries, applying
+   on top of the previously-produced `-marked.pdf` (pass it as the `<pdf>` argument) — applying is
+   additive, so re-running the whole plan against the same output would duplicate every
+   already-successful annotation.
 
 ## The most important rule: quotes must be verbatim
 
@@ -91,6 +94,7 @@ one per sentence. Marking everything is as unhelpful to the reader as marking no
 
 1. Re-read the exact text of that page (don't trust your first reading of it).
 2. Correct the quote to match verbatim.
-3. Re-run `--apply-markup` with just the corrected entries (or the whole plan again — applying
-   is additive, so re-running previously-successful entries will duplicate them; prefer a
-   smaller follow-up plan containing only the fixed entries).
+3. Re-run `--apply-markup` against the `-marked.pdf` produced by the previous run, with just the
+   corrected entries (or the whole plan again — applying is additive, so re-running
+   previously-successful entries will duplicate them; prefer a smaller follow-up plan containing
+   only the fixed entries).
