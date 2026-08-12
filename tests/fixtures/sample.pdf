@@ -1,0 +1,96 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+5 0 obj
+<< /Length 581 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Introduction) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(This document exists so the RailMark test suite has a PDF whose exact) Tj
+0 -18 Td
+(contents are known. The model described here is inter-) Tj
+0 -18 Td
+(pretable in practice, which is the point of the exercise.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(The reviewer called it ìthe best available optionî at the time.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Methods) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Each sample was measured twice and the results were averaged. This) Tj
+0 -18 Td
+(paragraph sits under the second heading on the same page.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 223 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Results) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(No attempt was made to preserve the original ordering of the samples.) Tj
+0 -18 Td
+(The effect was small but consistent across every run of the experiment.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Outlines /First 9 0 R /Last 11 0 R /Count 3 >>
+endobj
+9 0 obj
+<< /Title (Introduction) /Parent 8 0 R /Next 10 0 R /Dest [3 0 R /XYZ 72 720 0] >>
+endobj
+10 0 obj
+<< /Title (Methods) /Parent 8 0 R /Prev 9 0 R /Next 11 0 R /Dest [3 0 R /XYZ 72 576 0] >>
+endobj
+11 0 obj
+<< /Title (Results) /Parent 8 0 R /Prev 10 0 R /Dest [4 0 R /XYZ 72 720 0] >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000080 00000 n 
+0000000143 00000 n 
+0000000269 00000 n 
+0000000395 00000 n 
+0000001027 00000 n 
+0000001301 00000 n 
+0000001398 00000 n 
+0000001470 00000 n 
+0000001568 00000 n 
+0000001674 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1768
+%%EOF
