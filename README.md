@@ -52,11 +52,12 @@ Build the AppImage:
 ## Features
 
 - Extracts all annotation types: highlights, underlines, strikeouts, squiggly, text notes, rectangles, freehand drawings, carets, and free-text
-- Groups annotations under document headings from the PDF outline, in reading order
+- Groups annotations under document headings from the PDF outline, in reading order — including two headings on the same page, which are split by their position down the page
 - Summary table at the top with annotation counts per section
 - Highlights appear **bold** within their surrounding text context (fuzzy whitespace matching)
-- Text notes and reviewer comments are rendered as blockquotes
-- Cleans PDF text-extraction artifacts (soft hyphens, control characters)
+- Strikeouts and carets read as editorial intent — a strikeout is a *suggested deletion*, a caret a *suggested insertion*, and a caret paired with a strikeout collapses into a single *suggested replacement*
+- Text notes and reviewer comments are rendered as blockquotes; a comment that merely repeats the text it covers (as Skim writes it) is dropped rather than printed twice
+- Cleans PDF text-extraction artifacts: soft hyphens, control characters, ligatures (`ﬁ` → `fi`), smart quotes, and words split across a line break by a wrap hyphen
 - Optional cropped screenshots for rectangle and freehand annotations
 - Page-range and colour filtering
 - `--export` mode for layout-aware full-document Markdown from any PDF, with optional VLM figure transcription

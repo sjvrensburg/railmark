@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.8.2"
+VERSION="0.9.0"
 INSTALL_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 ASSET="railmark-${VERSION}-linux-x86_64.AppImage"
 URL="https://github.com/sjvrensburg/railmark/releases/download/v${VERSION}/${ASSET}"

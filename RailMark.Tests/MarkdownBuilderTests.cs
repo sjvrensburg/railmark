@@ -25,8 +25,9 @@ public class MarkdownBuilderTests
         Dictionary<(int, int), string>? highlightTexts = null,
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int, int), string>? images = null,
-        string? imageRelDir = null)
-        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir);
+        string? imageRelDir = null,
+        Dictionary<string, float>? headingPositions = null)
+        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir, headingPositions);
 
     private static int CountOccurrences(string source, string value)
     {
@@ -197,7 +198,7 @@ public class MarkdownBuilderTests
 
         var md = Build(file, [H("Chapter 1", 0)]).Build();
 
-        Assert.Contains("*(p. 1, caret)*", md);
+        Assert.Contains("*(p. 1, suggested insertion)*", md);
     }
 
     [Fact]
@@ -336,6 +337,172 @@ public class MarkdownBuilderTests
         Assert.Contains("| Chapter 1 | 1 | 0 | 0 | 0 | 2 |", md);
     }
 
+    // --- Text markup subtypes ---
+
+    [Fact]
+    public void StrikeOut_Is_Emitted_As_Suggested_Deletion()
+    {
+        var file = MakeFile([(0, [new StrikeOutAnnotation { Color = "#F00", Rects = [new(50, 50, 100, 10)] }])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "redundant clause" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.Contains("> ~~redundant clause~~", md);
+        Assert.Contains("*(p. 1, suggested deletion)*", md);
+    }
+
+    [Fact]
+    public void Underline_And_Squiggly_Are_Emitted()
+    {
+        var file = MakeFile([(0, [
+            new UnderlineAnnotation { Color = "#00F", Rects = [new(50, 50, 100, 10)] },
+            new SquigglyAnnotation { Color = "#F80", Rects = [new(50, 70, 100, 10)] },
+        ])]);
+        var texts = new Dictionary<(int, int), string>
+        {
+            [(0, 0)] = "underlined phrase",
+            [(0, 1)] = "questionable phrase",
+        };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.Contains("underlined phrase", md);
+        Assert.Contains("*(p. 1, underline)*", md);
+        Assert.Contains("questionable phrase", md);
+        Assert.Contains("*(p. 1, squiggly)*", md);
+    }
+
+    [Fact]
+    public void Summary_Counts_All_Text_Markup_Subtypes()
+    {
+        var file = MakeFile([(0, [
+            new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] },
+            new StrikeOutAnnotation { Color = "#F00", Rects = [new(50, 60, 100, 10)] },
+            new UnderlineAnnotation { Color = "#00F", Rects = [new(50, 70, 100, 10)] },
+        ])]);
+
+        var md = Build(file, [H("Ch1", 0)]).Build();
+
+        Assert.Contains("| Text markup |", md);
+        Assert.Contains("| Ch1 | 3 | 0 | 0 | 0 | 0 |", md);
+    }
+
+    // --- Caret + StrikeOut replacement grouping ---
+
+    [Fact]
+    public void Caret_With_StrikeOut_Child_Renders_As_Single_Replacement()
+    {
+        var caret = new CaretAnnotation
+        {
+            Color = "#FF0", X = 100, Y = 200, W = 10, H = 20,
+            NativeId = "caret-1", Contents = "concise wording",
+        };
+        var strikeOut = new StrikeOutAnnotation
+        {
+            Color = "#F00", Rects = [new(50, 200, 100, 10)], InReplyTo = "caret-1",
+        };
+        var file = MakeFile([(0, [caret, strikeOut])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 1)] = "unnecessarily verbose wording" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.Contains("> ~~unnecessarily verbose wording~~ → **concise wording**", md);
+        Assert.Contains("*(p. 1, suggested replacement)*", md);
+        // The strikeout is folded into the caret, not also emitted on its own.
+        Assert.DoesNotContain("suggested deletion", md);
+        Assert.Equal(1, CountOccurrences(md, "unnecessarily verbose wording"));
+    }
+
+    [Fact]
+    public void StrikeOut_Replying_To_Unknown_Id_Stays_Standalone()
+    {
+        var strikeOut = new StrikeOutAnnotation
+        {
+            Color = "#F00", Rects = [new(50, 200, 100, 10)], InReplyTo = "no-such-annotation",
+        };
+        var file = MakeFile([(0, [strikeOut])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "cut this" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.Contains("> ~~cut this~~", md);
+        Assert.Contains("*(p. 1, suggested deletion)*", md);
+    }
+
+    // --- Duplicated /Contents suppression ---
+
+    [Fact]
+    public void Highlight_Contents_Echoing_Marked_Text_Is_Suppressed()
+    {
+        // Skim pre-fills /Contents with a copy of the selected text.
+        var file = MakeFile([(0, [new HighlightAnnotation
+        {
+            Color = "#FF0", Contents = "the selected sentence",
+            Rects = [new(50, 50, 100, 10)],
+        }])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "the selected sentence" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.DoesNotContain("**Comment:**", md);
+        Assert.Equal(1, CountOccurrences(md, "the selected sentence"));
+    }
+
+    [Fact]
+    public void Highlight_Contents_Differing_From_Marked_Text_Is_Kept()
+    {
+        var file = MakeFile([(0, [new HighlightAnnotation
+        {
+            Color = "#FF0", Contents = "needs a citation",
+            Rects = [new(50, 50, 100, 10)],
+        }])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "the selected sentence" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build();
+
+        Assert.Contains("**Comment:** needs a citation", md);
+    }
+
+    // --- Heading positions ---
+
+    [Fact]
+    public void Two_Headings_On_One_Page_Split_Annotations_By_Position()
+    {
+        var outline = new List<OutlineEntry> { H("Methods", 3), H("Results", 3) };
+        var file = MakeFile([(3, [
+            new TextNoteAnnotation { Color = "#FF0", X = 10, Y = 150, Text = "methods note" },
+            new TextNoteAnnotation { Color = "#FF0", X = 10, Y = 550, Text = "results note" },
+        ])]);
+        var positions = new Dictionary<string, float>
+        {
+            [MarkdownBuilder.HeadingKey("Methods", 3)] = 100f,
+            [MarkdownBuilder.HeadingKey("Results", 3)] = 500f,
+        };
+
+        var md = Build(file, outline, headingPositions: positions).Build();
+
+        var methodsIdx = md.IndexOf("## Methods", StringComparison.Ordinal);
+        var resultsIdx = md.IndexOf("## Results", StringComparison.Ordinal);
+        var methodsNoteIdx = md.IndexOf("methods note", StringComparison.Ordinal);
+        var resultsNoteIdx = md.IndexOf("results note", StringComparison.Ordinal);
+
+        // Each note falls under the heading above it, not both under the first.
+        Assert.True(methodsIdx < methodsNoteIdx && methodsNoteIdx < resultsIdx);
+        Assert.True(resultsIdx < resultsNoteIdx);
+    }
+
+    [Fact]
+    public void Unknown_Heading_Positions_Fall_Back_To_Page_Ordering()
+    {
+        var outline = new List<OutlineEntry> { H("Introduction", 0), H("Results", 10) };
+        var file = MakeFile([(10, [new TextNoteAnnotation { Color = "#FF0", X = 10, Y = 400, Text = "note" }])]);
+
+        var md = Build(file, outline).Build();
+
+        var resultsIdx = md.IndexOf("## Results", StringComparison.Ordinal);
+        Assert.True(resultsIdx >= 0 && resultsIdx < md.IndexOf("**Note:** note", StringComparison.Ordinal));
+    }
+
     // --- CleanText ---
 
     [Fact]
@@ -352,6 +519,81 @@ public class MarkdownBuilderTests
         var input = "word one  word   two\r\nword\tthree";
         var cleaned = MarkdownBuilder.CleanText(input);
         Assert.Equal("word one word two word three", cleaned);
+    }
+
+    [Fact]
+    public void CleanText_Rejoins_Words_Split_By_A_Wrap_Hyphen()
+    {
+        Assert.Equal("compileable source", MarkdownBuilder.CleanText("com-\npileable source"));
+        Assert.Equal("compileable source", MarkdownBuilder.CleanText("com-\r\n   pileable source"));
+    }
+
+    [Fact]
+    public void CleanText_Keeps_Real_Hyphens_At_A_Line_End()
+    {
+        // Uppercase or digit before the hyphen means it is part of the word, not a wrap artefact.
+        Assert.Equal("COVID-19 cases", MarkdownBuilder.CleanText("COVID-\n19 cases"));
+        Assert.Equal("H-1 visas", MarkdownBuilder.CleanText("H-\n1 visas"));
+    }
+
+    [Fact]
+    public void CleanText_Keeps_Hyphens_Not_At_A_Line_End()
+    {
+        Assert.Equal("well-known result", MarkdownBuilder.CleanText("well-known result"));
+        Assert.Equal("well- known result", MarkdownBuilder.CleanText("well- known result"));
+    }
+
+    [Fact]
+    public void CleanText_Expands_Ligatures_And_Normalises_Quotes()
+    {
+        Assert.Equal("the first difficulty", MarkdownBuilder.CleanText("the ﬁrst diﬃculty"));
+        Assert.Equal("\"quoted\" and 'quoted'", MarkdownBuilder.CleanText("“quoted” and ‘quoted’"));
+        Assert.Equal("and so on...", MarkdownBuilder.CleanText("and so on…"));
+    }
+
+    // --- Quote resolution ---
+
+    [Fact]
+    public void ResolveQuote_Finds_A_Quote_Written_Without_Ligatures()
+    {
+        var pageText = "We report the ﬁrst results of the study.";
+
+        var range = TextLocator.ResolveQuote(pageText, "the first results");
+
+        Assert.NotNull(range);
+        var matched = pageText.Substring(range!.Value.CharStart, range.Value.CharLength);
+        Assert.Equal("the ﬁrst results", matched);
+    }
+
+    [Fact]
+    public void ResolveQuote_Finds_A_Quote_Spanning_A_Wrap_Hyphen()
+    {
+        var pageText = "The model is inter-\npretable in practice.";
+
+        var range = TextLocator.ResolveQuote(pageText, "is interpretable in practice");
+
+        Assert.NotNull(range);
+        // The matched span covers both sides of the break so the geometry covers both lines.
+        var matched = pageText.Substring(range!.Value.CharStart, range.Value.CharLength);
+        Assert.Equal("is inter-\npretable in practice", matched);
+    }
+
+    [Fact]
+    public void ResolveQuote_Finds_A_Quote_Written_With_Straight_Quotes()
+    {
+        var pageText = "He called it “the best option” at the time.";
+
+        var range = TextLocator.ResolveQuote(pageText, "\"the best option\"");
+
+        Assert.NotNull(range);
+        var matched = pageText.Substring(range!.Value.CharStart, range.Value.CharLength);
+        Assert.Equal("“the best option”", matched);
+    }
+
+    [Fact]
+    public void ResolveQuote_Returns_Null_When_Absent()
+    {
+        Assert.Null(TextLocator.ResolveQuote("some page text", "not on this page"));
     }
 
     // --- Label ---

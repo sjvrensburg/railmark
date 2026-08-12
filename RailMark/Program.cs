@@ -355,7 +355,9 @@ if (totalAnnotations == 0)
 var pdf = factory.CreatePdfService(pdfPath);
 var textService = new PdfTextService();
 
-// Pre-extract per-page text and highlight text from PDF character boxes
+// Pre-extract per-page text and marked-up text from PDF character boxes. Every text-markup
+// subtype (highlight, underline, strikeout, squiggly) covers text worth quoting, not just
+// highlights.
 var pageTexts = new Dictionary<int, string>();
 var highlightTexts = new Dictionary<(int page, int annotIdx), string>();
 
@@ -375,10 +377,14 @@ foreach (var (pageIdx, annotations) in annotationFile.Pages)
 
     for (int i = 0; i < annotations.Count; i++)
     {
-        if (pageText != null && annotations[i] is HighlightAnnotation highlight && highlight.Rects.Count > 0)
+        if (pageText != null && annotations[i] is TextMarkupAnnotation markup && markup.Rects.Count > 0)
         {
-            var parts = highlight.Rects
-                .Select(r => pageText.ExtractTextInRect(r.X, r.Y, r.X + r.W, r.Y + r.H))
+            var parts = markup.Rects
+                .Select(r =>
+                {
+                    var (x0, y0, x1, y1) = TextExtractionBounds(markup, r);
+                    return pageText.ExtractTextInRect(x0, y0, x1, y1);
+                })
                 .Where(t => !string.IsNullOrEmpty(t))
                 .ToList();
             if (parts.Count > 0)
@@ -386,6 +392,8 @@ foreach (var (pageIdx, annotations) in annotationFile.Pages)
         }
     }
 }
+
+var headingPositions = ResolveHeadingPositions(pdf, textService, pdf.Outline, pageTexts);
 
 // Optionally render and crop screenshots
 Dictionary<(int page, int annotIdx), string>? images = null;
@@ -407,7 +415,8 @@ var builder = new MarkdownBuilder(
     highlightTexts,
     pageTexts,
     images,
-    imageRelDir);
+    imageRelDir,
+    headingPositions);
 
 var markdown = builder.Build();
 
@@ -422,6 +431,89 @@ else
 return 0;
 
 // --- Helpers ---
+
+/// <summary>
+/// The rect to pull text from for a text-markup annotation. Highlights and strikeouts are drawn
+/// across the whole glyph box, so their rect is the text. Underline and squiggly rects are only a
+/// thin band at the baseline (see MarkupPlanService), and extracting from that band finds no
+/// characters at all — so grow it back up to the glyph box it was derived from.
+/// </summary>
+static (float X0, float Y0, float X1, float Y1) TextExtractionBounds(TextMarkupAnnotation markup, HighlightRect r)
+{
+    if (markup is not (UnderlineAnnotation or SquigglyAnnotation))
+        return (r.X, r.Y, r.X + r.W, r.Y + r.H);
+
+    // MarkupPlanService builds the band as 15% of the glyph height (floored at 2pt), so the
+    // inverse recovers the glyph box, and never shrinks it when the floor was applied.
+    var glyphHeight = MathF.Max(r.H / 0.15f, r.H);
+    var bottom = r.Y + r.H;
+    return (r.X, bottom - glyphHeight, r.X + r.W, bottom);
+}
+
+/// <summary>
+/// Locates each outline entry's title in its own page's text so annotations can be filed under
+/// the heading that actually precedes them, rather than under whichever heading happens to come
+/// first on the page. Headings whose title cannot be found (renumbered bookmarks, headings drawn
+/// as images) are simply omitted — MarkdownBuilder falls back to page-level ordering for those.
+/// </summary>
+static Dictionary<string, float> ResolveHeadingPositions(
+    IPdfService pdf,
+    IPdfTextService textService,
+    List<OutlineEntry> outline,
+    Dictionary<int, string> pageTexts)
+{
+    var positions = new Dictionary<string, float>();
+
+    var flattened = new List<(string key, string title, int page)>();
+    void Flatten(List<OutlineEntry> entries)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry.Page is int page && pageTexts.ContainsKey(page))
+                flattened.Add((MarkdownBuilder.HeadingKey(entry.Title, entry.Page), entry.Title, page));
+            Flatten(entry.Children);
+        }
+    }
+    Flatten(outline);
+
+    // One batched geometry call per page, matching MarkupPlanService's approach.
+    foreach (var group in flattened.GroupBy(h => h.page))
+    {
+        var pageText = pageTexts[group.Key];
+
+        var resolved = new List<(string key, int start, int length)>();
+        foreach (var (key, title, _) in group)
+        {
+            if (positions.ContainsKey(key)) continue;
+            if (string.IsNullOrWhiteSpace(title)) continue;
+
+            var range = TextLocator.ResolveQuote(pageText, title);
+            if (range is not null)
+                resolved.Add((key, range.Value.CharStart, range.Value.CharLength));
+        }
+
+        if (resolved.Count == 0) continue;
+
+        try
+        {
+            var rectLines = textService.GetTextRangeRects(
+                pdf.PdfBytes, group.Key, resolved.Select(r => (r.start, r.length)).ToList());
+
+            for (int i = 0; i < resolved.Count && i < rectLines.Count; i++)
+            {
+                if (rectLines[i].Count == 0) continue;
+                positions[resolved[i].key] = rectLines[i].Min(r => r.Top);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Warning: Could not locate headings on page {group.Key + 1}: {ex.Message}");
+        }
+    }
+
+    return positions;
+}
 
 static AnnotationFile FilterPages(AnnotationFile src, Func<int, List<Annotation>, bool> pred)
 {
