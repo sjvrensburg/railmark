@@ -386,9 +386,14 @@ foreach (var (pageIdx, annotations) in annotationFile.Pages)
                     return pageText.ExtractTextInRect(x0, y0, x1, y1);
                 })
                 .Where(t => !string.IsNullOrEmpty(t))
+                .Select(t => t!)
                 .ToList();
+            // Rects are per visual line. Recover what the page text actually has between them
+            // rather than assuming a space — a word split across the break is joined by a
+            // soft-hyphen marker, and a space there would read as "inter pretable".
             if (parts.Count > 0)
-                highlightTexts[(pageIdx, i)] = string.Join(" ", parts);
+                highlightTexts[(pageIdx, i)] =
+                    TextLocator.SpanCoveringParts(pageText.Text, parts) ?? string.Join(" ", parts);
         }
     }
 }

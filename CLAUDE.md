@@ -109,8 +109,15 @@ It exports the fixture, applies a markup plan, and extracts the annotations back
 
 Two gotchas the fixture exposed, both expected:
 
-- `--export` writes **U+0002** where it rejoined a wrap-hyphenated word, so the output reads as `interpretable` without literally containing that string. `TextLocator` strips U+0002, so a quote copied out of the export still resolves.
+- `--export` writes **U+0002** where it rejoined a wrap-hyphenated word, so the output reads as `interpretable` without literally containing that string. `TextLocator` strips U+0002, so a quote copied out of the export still resolves. (Annotation-mode output no longer carries the marker — see `StripInvisibleMarkers` below — but `--export` comes straight from `RailReader.Export` and still does.)
 - Marked-up text passes through `CleanText`, so annotation-mode output has straight quotes where the export has curly ones.
+
+### Extracted text is per-line, and the join matters
+
+`PdfTextService.ExtractPageText` **already de-hyphenates**: a word the producer split across a line break comes back as `inter` + **U+0002** + `pretable`, with no hyphen anywhere in the text layer. Two consequences, both handled in `TextLocator`:
+
+- Markup text is extracted one rect per visual line, so the parts must be rejoined through the page text (`SpanCoveringParts`) rather than with a space — a space would render a split word as `inter pretable`. The plain join remains as a fallback when the parts can't be located verbatim.
+- Page text emitted verbatim into Markdown (the bold-in-context line) must go through `StripInvisibleMarkers`, which drops U+0002/U+0003/U+00AD while leaving line breaks alone. Apply it *after* any offset arithmetic, since it shifts indices.
 
 Still not covered: `ScreenshotService` (needs renderable pages), and the `--images` path generally.
 
