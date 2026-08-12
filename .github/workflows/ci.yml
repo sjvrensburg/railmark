@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Test
+        run: dotnet test -c Release --no-build
+
+  # Windows packaging is the least-exercised path, so prove it still compiles on
+  # every change rather than discovering it is broken while cutting a release.
+  publish-matrix:
+    name: Publish (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [linux-x64, win-x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish self-contained
+        run: |
+          dotnet publish RailMark/ -c Release -r ${{ matrix.rid }} \
+            --self-contained true -p:DebugType=none -o out
+
+      - name: Check native dependencies were published
+        run: |
+          set -eu
+          case "${{ matrix.rid }}" in
+            linux-x64) expected="libpdfium.so libSkiaSharp.so libonnxruntime.so" ;;
+            win-x64)   expected="pdfium.dll libSkiaSharp.dll onnxruntime.dll" ;;
+          esac
+          for lib in $expected; do
+            if [ ! -f "out/$lib" ]; then
+              echo "Missing native library in publish output: $lib" >&2
+              exit 1
+            fi
+            echo "  found $lib"
+          done
