@@ -23,6 +23,18 @@ jobs:
       - name: Test
         run: dotnet test -c Release --no-build
 
+      # The committed fixture must stay in step with its generator, or the
+      # integration checks below would be asserting against a stale document.
+      - name: Check test fixture is reproducible
+        run: |
+          python3 tests/fixtures/make-sample-pdf.py /tmp/regen.pdf
+          cmp tests/fixtures/sample.pdf /tmp/regen.pdf
+
+      # Unit tests fake IPdfService/IPdfTextService, so nothing there exercises
+      # real pdfium geometry. This does.
+      - name: Integration checks against the fixture PDF
+        run: ./tests/integration-smoke.sh dotnet run --project RailMark/ -c Release --
+
   # Windows packaging is the least-exercised path, so prove it still compiles on
   # every change rather than discovering it is broken while cutting a release.
   publish-matrix:

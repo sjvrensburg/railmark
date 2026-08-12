@@ -106,6 +106,8 @@ jobs:
           chmod +x "$appimage"
           "$appimage" --version
           "$appimage" --help > /dev/null
+          # Exercise the real artifact end to end, not just its entry point.
+          ./tests/integration-smoke.sh "$appimage"
 
       - name: Smoke test tarball
         run: |
@@ -115,6 +117,7 @@ jobs:
           launcher=$(ls -d /tmp/tarcheck/*/railmark)
           "$launcher" --version
           "$launcher" --help > /dev/null
+          ./tests/integration-smoke.sh "$launcher"
           # The bundled model is the whole reason these artifacts are ~160 MB;
           # a silently missing one would degrade --export with no other signal.
           test -f "$(dirname "$launcher")/models/${MODEL_NAME}"
@@ -182,6 +185,7 @@ jobs:
           stage="build/railmark-${VERSION}-win-x64"
           ./"$stage"/railmark.exe --version
           ./"$stage"/railmark.exe --help > /dev/null
+          ./tests/integration-smoke.sh "./$stage/railmark.exe"
 
       - name: Create zip
         env:
