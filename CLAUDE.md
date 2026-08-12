@@ -27,9 +27,10 @@ Solution file is `RailMark.slnx` (new XML `.slnx` format, not traditional `.sln`
 **Annotation mode (default):**
 1. `PdfiumResolver.Initialize()` + `SkiaPdfServiceFactory` init
 2. Manual arg parsing → `CompositeAnnotationStore.Default.Load(pdf)` → page/color filter
-3. `PdfTextService.ExtractPageText()` per page → `ExtractTextInRect()` per highlight rect
-4. Optional `ScreenshotService.CropAnnotationsAsync()` for `--images`
-5. `MarkdownBuilder.Build()` → write file
+3. `PdfTextService.ExtractPageText()` per page → `ExtractTextInRect()` per rect of every `TextMarkupAnnotation` (all four subtypes, not just highlights). The probe rect comes from `TextExtractionBounds()`: underline/squiggly rects are only the thin baseline band `MarkupPlanService` writes, so they are grown back to the glyph box (`H / 0.15f`) or they match no characters at all.
+4. `ResolveHeadingPositions()` — locates each outline title in its own page's text (`TextLocator.ResolveQuote` → batched `GetTextRangeRects`) so headings can be ordered within a page
+5. Optional `ScreenshotService.CropAnnotationsAsync()` for `--images`
+6. `MarkdownBuilder.Build()` → write file
 
 **Export mode (`--export`):**
 1. `PdfiumResolver.Initialize()` + `SkiaPdfServiceFactory` init
@@ -53,8 +54,10 @@ Outline from `IPdfService.Outline` → `List<OutlineEntry>` (Title, Page?, Child
 ### Services
 
 - **ScreenshotService.cs** — Crops rendered page PNGs to annotation bounding boxes. Takes `IPdfService` (renders via `RenderPage()` cast to `SkiaRenderedPage`). Groups nearby freehand strokes via a **union-find** algorithm (`MergeDistancePt = 50`). No shell-out.
-- **MarkdownBuilder.cs** — Assigns annotations to headings by flattening the PDF outline and matching page ≤ annotation page. Sorts by (page, SortY). Emits: summary table, bold-in-context highlights with 2-tier fuzzy matching (exact → whitespace-collapsed → fallback bold, via `TextLocator`), blockquoted notes, optional image embeds. Heading depth: 0 → `##`, 1 → `###`, 2+ → `####`.
-- **TextLocator.cs** — Shared whitespace-tolerant text-matching primitive (`NormalizeWithMap`, `CleanText`), extracted from `MarkdownBuilder`. `ResolveQuote(pageText, quote)` resolves a quoted string to an exact `(CharStart, CharLength)` range (tier 1 exact match, tier 2 whitespace-normalised match), returning `null` on no match — used by `MarkupPlanService` as a hard per-entry error, unlike `MarkdownBuilder`'s own silent bold-fallback.
+- **MarkdownBuilder.cs** — Assigns annotations to headings by flattening the PDF outline and taking the last heading preceding the annotation in reading order — `(page, y)`, not page alone, so two headings on one page split their annotations correctly. Heading `y` comes from the optional `headingPositions` ctor argument (keyed by `MarkdownBuilder.HeadingKey`), which `Program.cs` builds via `ResolveHeadingPositions()`; a heading whose title can't be located on its page falls back to `y = 0` and therefore to the old page-level behaviour. Sorts by (page, SortY). Emits: summary table, bold-in-context highlights with 2-tier fuzzy matching (exact → whitespace-collapsed → fallback bold, via `TextLocator`), blockquoted notes, optional image embeds. Heading depth: 0 → `##`, 1 → `###`, 2+ → `####`.
+  - All four `TextMarkupAnnotation` subtypes are rendered, not just highlights. Labels carry editorial intent: strikeout → *suggested deletion*, lone caret → *suggested insertion*. A `StrikeOutAnnotation` whose `InReplyTo` names a `CaretAnnotation`'s `NativeId` is folded into that caret as a single *suggested replacement* entry (`BuildCaretReplacements`), and suppressed from its own emission via `_groupChildren`.
+  - An annotation whose `/Contents` merely repeats the text it covers (Skim writes the selection into `/Contents`) has the comment dropped — see `IsEchoOfMarkedText`.
+- **TextLocator.cs** — Shared text-matching primitive (`NormalizeWithMap`, `CleanText`), extracted from `MarkdownBuilder`. Normalisation collapses whitespace, drops soft hyphens and control characters, expands ligatures and smart quotes via `CharacterSubstitutions`, and rejoins words split across a line break by a wrap hyphen (dropped when the preceding character is lowercase — `com-\npileable`; kept, but with the break swallowed, otherwise — `COVID-\n19`). Because a ligature expands to more characters than it consumes, the index map is built as a `List<int>` and can be longer than the input. `ResolveQuote(pageText, quote)` resolves a quoted string to an exact `(CharStart, CharLength)` range (tier 1 exact match, tier 2 normalised match), returning `null` on no match — used by `MarkupPlanService` as a hard per-entry error, unlike `MarkdownBuilder`'s own silent bold-fallback.
 - **MarkupPlanService.cs** — `Resolve(plan, pdf, textService, existing, password)` turns a `MarkupPlan` into an `AnnotationFile` (merged with `existing`, not overwritten) plus a `MarkupPlanApplyResult` of per-entry outcomes. Does not persist — caller calls `CompositeAnnotationStore.Save()`. Note placement: right-margin inset (24pt) at the vertical centre of the quote's last matched line.
 
 ### Page indexing

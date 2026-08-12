@@ -15,6 +15,14 @@ public class MarkdownBuilder
     private readonly Dictionary<(int page, int annotIdx), string>? _images;
     private readonly string? _imageRelDir;
     private readonly Dictionary<int, (string text, int[] map)> _normPageCache = [];
+    // Vertical position of each heading on its own page, keyed by HeadingKey. Only populated for
+    // headings whose title could be located in the page text; absent means page-level ordering.
+    private readonly Dictionary<string, float>? _headingPositions;
+    // Struck-out text an editor marked for replacement, keyed by the caret annotation that
+    // carries the replacement — see BuildCaretReplacements.
+    private readonly Dictionary<CaretAnnotation, (int page, int annotIdx)> _caretReplacements = [];
+    // (page, annotIdx) of annotations rendered as part of another annotation, not on their own.
+    private readonly HashSet<(int page, int annotIdx)> _groupChildren = [];
 
     public MarkdownBuilder(
         AnnotationFile annotations,
@@ -23,7 +31,8 @@ public class MarkdownBuilder
         Dictionary<(int page, int annotIdx), string>? highlightTexts = null,
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int page, int annotIdx), string>? images = null,
-        string? imageRelDir = null)
+        string? imageRelDir = null,
+        Dictionary<string, float>? headingPositions = null)
     {
         _annotations = annotations;
         _sourceName = sourceName;
@@ -32,6 +41,7 @@ public class MarkdownBuilder
         _pageTexts = pageTexts;
         _images = images;
         _imageRelDir = imageRelDir;
+        _headingPositions = headingPositions;
     }
 
     public string Build()
@@ -45,19 +55,24 @@ public class MarkdownBuilder
         var headingOrder = new List<(string key, string title, int depth)>();
         BuildHeadingIndex(_outline, 0, headingOrder, []);
 
-        // Flatten outline sorted by page for heading assignment
-        var sortedHeadings = new List<(string key, int? page)>();
-        CollectHeadingsByPage(_outline, sortedHeadings);
+        // Flatten outline sorted by reading order (page, then vertical position where known) for
+        // heading assignment. Without the Y component every annotation on a page carrying two
+        // headings would be filed under the first of them.
+        var sortedHeadings = new List<(string key, int? page, float y)>();
+        CollectHeadingsByPage(_outline, sortedHeadings, _headingPositions);
         sortedHeadings.Sort((a, b) =>
         {
             // Entries without a page go to the end
             if (a.page == null && b.page == null) return 0;
             if (a.page == null) return 1;
             if (b.page == null) return -1;
-            return a.page.Value.CompareTo(b.page.Value);
+            var pageCmp = a.page.Value.CompareTo(b.page.Value);
+            return pageCmp != 0 ? pageCmp : a.y.CompareTo(b.y);
         });
 
         var validKeys = new HashSet<string>(headingOrder.Select(h => h.key));
+
+        BuildCaretReplacements();
 
         // Group annotations by heading
         var grouped = new Dictionary<string, List<(int page, int annotIdx, Annotation annotation)>>();
@@ -67,7 +82,7 @@ public class MarkdownBuilder
             for (int i = 0; i < annotations.Count; i++)
             {
                 var annotation = annotations[i];
-                var headingKey = FindNearestHeadingKey(sortedHeadings, validKeys, pageIdx);
+                var headingKey = FindNearestHeadingKey(sortedHeadings, validKeys, pageIdx, GetSortY(annotation));
 
                 if (!grouped.ContainsKey(headingKey))
                     grouped[headingKey] = [];
@@ -112,30 +127,71 @@ public class MarkdownBuilder
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Picks the last heading that precedes the annotation in reading order. Headings whose
+    /// position on the page is unknown sort to the top of their page (y == 0), which reproduces
+    /// the previous page-only behaviour for them.
+    /// </summary>
     private static string FindNearestHeadingKey(
-        List<(string key, int? page)> sortedHeadings,
+        List<(string key, int? page, float y)> sortedHeadings,
         HashSet<string> validKeys,
-        int annotPage)
+        int annotPage,
+        float annotY)
     {
         string? bestKey = null;
-        foreach (var (key, page) in sortedHeadings)
+        foreach (var (key, page, y) in sortedHeadings)
         {
-            if (page.HasValue && page.Value <= annotPage && validKeys.Contains(key))
+            if (!page.HasValue) break;
+
+            bool precedes = page.Value < annotPage || (page.Value == annotPage && y <= annotY);
+            if (!precedes) break;
+
+            if (validKeys.Contains(key))
                 bestKey = key;
-            else if (page.HasValue && page.Value > annotPage)
-                break;
         }
         return bestKey ?? "__no_heading__";
     }
 
-    private static double GetSortY(Annotation a) => a switch
+    private static float GetSortY(Annotation a) => a switch
     {
-        HighlightAnnotation h => h.Rects.Count > 0 ? h.Rects[0].Y : 0,
+        TextMarkupAnnotation m => m.Rects.Count > 0 ? m.Rects[0].Y : 0,
         TextNoteAnnotation n => n.Y,
         RectAnnotation r => r.Y,
+        CaretAnnotation c => c.Y,
+        FreeTextAnnotation f => f.Y,
         FreehandAnnotation f => f.Points.Count > 0 ? f.Points.Min(p => p.Y) : 0,
         _ => 0
     };
+
+    /// <summary>
+    /// A "replace this text with that text" edit is written as a caret carrying the replacement
+    /// text with a strikeout over the text to remove, linked to it by /IRT. Pair them up so the
+    /// edit renders as one entry instead of two unrelated ones.
+    /// </summary>
+    private void BuildCaretReplacements()
+    {
+        var caretsById = new Dictionary<string, CaretAnnotation>(StringComparer.Ordinal);
+        foreach (var (_, annotations) in _annotations.Pages)
+            foreach (var annotation in annotations)
+                if (annotation is CaretAnnotation caret && !string.IsNullOrEmpty(caret.NativeId))
+                    caretsById[caret.NativeId] = caret;
+
+        if (caretsById.Count == 0) return;
+
+        foreach (var (pageIdx, annotations) in _annotations.Pages)
+        {
+            for (int i = 0; i < annotations.Count; i++)
+            {
+                if (annotations[i] is not StrikeOutAnnotation strikeOut) continue;
+                if (string.IsNullOrEmpty(strikeOut.InReplyTo)) continue;
+                if (!caretsById.TryGetValue(strikeOut.InReplyTo, out var caret)) continue;
+                // A caret can only stand in for one strikeout; leave any others standalone.
+                if (!_caretReplacements.TryAdd(caret, (pageIdx, i))) continue;
+
+                _groupChildren.Add((pageIdx, i));
+            }
+        }
+    }
 
     private void EmitSummary(
         StringBuilder sb,
@@ -150,17 +206,17 @@ public class MarkdownBuilder
         sb.AppendLine($"**{total} annotations** across **{pageCount} pages**");
         sb.AppendLine();
 
-        sb.AppendLine("| Section | Highlights | Notes | Rectangles | Freehand | Other |");
-        sb.AppendLine("|---------|-----------|-------|------------|----------|-------|");
+        sb.AppendLine("| Section | Text markup | Notes | Rectangles | Freehand | Other |");
+        sb.AppendLine("|---------|-------------|-------|------------|----------|-------|");
 
         foreach (var (key, title, _) in headingOrder)
         {
             if (!grouped.TryGetValue(key, out var list)) continue;
-            sb.AppendLine($"| {title} | {Count<HighlightAnnotation>(list)} | {Count<TextNoteAnnotation>(list)} | {Count<RectAnnotation>(list)} | {Count<FreehandAnnotation>(list)} | {CountOther(list)} |");
+            sb.AppendLine($"| {title} | {Count<TextMarkupAnnotation>(list)} | {Count<TextNoteAnnotation>(list)} | {Count<RectAnnotation>(list)} | {Count<FreehandAnnotation>(list)} | {CountOther(list)} |");
         }
 
         if (grouped.TryGetValue("__no_heading__", out var ug))
-            sb.AppendLine($"| *(Other)* | {Count<HighlightAnnotation>(ug)} | {Count<TextNoteAnnotation>(ug)} | {Count<RectAnnotation>(ug)} | {Count<FreehandAnnotation>(ug)} | {CountOther(ug)} |");
+            sb.AppendLine($"| *(Other)* | {Count<TextMarkupAnnotation>(ug)} | {Count<TextNoteAnnotation>(ug)} | {Count<RectAnnotation>(ug)} | {Count<FreehandAnnotation>(ug)} | {CountOther(ug)} |");
 
         sb.AppendLine();
     }
@@ -169,7 +225,7 @@ public class MarkdownBuilder
         => list.Count(x => x.a is T);
 
     private static int CountOther(List<(int, int, Annotation a)> list)
-        => list.Count(x => x.a is not HighlightAnnotation and not TextNoteAnnotation
+        => list.Count(x => x.a is not TextMarkupAnnotation and not TextNoteAnnotation
             and not RectAnnotation and not FreehandAnnotation);
 
     private void EmitAnnotationGroup(
@@ -180,6 +236,10 @@ public class MarkdownBuilder
 
         foreach (var (page, annotIdx, annotation) in annotations)
         {
+            // Rendered inline by its parent (e.g. the strikeout half of a replacement edit).
+            if (_groupChildren.Contains((page, annotIdx)))
+                continue;
+
             bool suppressImage = false;
             if (TryGetImagePath(page, annotIdx, out var imgPath) && !emittedImages.Add(imgPath))
                 suppressImage = true;
@@ -194,6 +254,9 @@ public class MarkdownBuilder
         {
             case HighlightAnnotation highlight:
                 EmitHighlight(sb, page, annotIdx, highlight);
+                break;
+            case TextMarkupAnnotation markup:
+                EmitTextMarkup(sb, page, annotIdx, markup);
                 break;
             case TextNoteAnnotation note:
                 EmitTextNote(sb, page, note);
@@ -213,10 +276,21 @@ public class MarkdownBuilder
         }
     }
 
+    private string GetMarkupText(int page, int annotIdx)
+        => CleanText(_highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var t) ? t : "");
+
+    /// <summary>
+    /// Some readers (Skim, notably) pre-fill an annotation's /Contents with a copy of the text it
+    /// covers. Printing that as a reviewer comment just repeats the quote back, so drop it.
+    /// </summary>
+    private static bool IsEchoOfMarkedText(string? contents, string markedText)
+        => !string.IsNullOrWhiteSpace(contents)
+           && !string.IsNullOrWhiteSpace(markedText)
+           && string.Equals(CleanText(contents), markedText.Trim(), StringComparison.Ordinal);
+
     private void EmitHighlight(StringBuilder sb, int page, int annotIdx, HighlightAnnotation highlight)
     {
-        var highlightedText = CleanText(
-            _highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var ht) ? ht : "");
+        var highlightedText = GetMarkupText(page, annotIdx);
 
         if (!string.IsNullOrWhiteSpace(highlightedText))
         {
@@ -232,7 +306,7 @@ public class MarkdownBuilder
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(highlight.Contents))
+        if (!string.IsNullOrWhiteSpace(highlight.Contents) && !IsEchoOfMarkedText(highlight.Contents, highlightedText))
         {
             sb.AppendLine(">");
             sb.AppendLine($"> **Comment:** {highlight.Contents}");
@@ -240,6 +314,36 @@ public class MarkdownBuilder
 
         sb.AppendLine(">");
         sb.AppendLine($"> {GetLabel(page, "highlight")}");
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Underline, strikeout and squiggly markup. These carry an editorial intent the label spells
+    /// out, following the vocabulary pdfannots uses for the same annotation types.
+    /// </summary>
+    private void EmitTextMarkup(StringBuilder sb, int page, int annotIdx, TextMarkupAnnotation markup)
+    {
+        var markedText = GetMarkupText(page, annotIdx);
+
+        var (label, rendered) = markup switch
+        {
+            StrikeOutAnnotation => ("suggested deletion", $"~~{markedText}~~"),
+            UnderlineAnnotation => ("underline", $"<u>{markedText}</u>"),
+            SquigglyAnnotation => ("squiggly", $"*{markedText}*"),
+            _ => ("text markup", markedText),
+        };
+
+        if (!string.IsNullOrWhiteSpace(markedText))
+            sb.AppendLine($"> {rendered}");
+
+        if (!string.IsNullOrWhiteSpace(markup.Contents) && !IsEchoOfMarkedText(markup.Contents, markedText))
+        {
+            sb.AppendLine(">");
+            sb.AppendLine($"> **Comment:** {markup.Contents}");
+        }
+
+        sb.AppendLine(">");
+        sb.AppendLine($"> {GetLabel(page, label)}");
         sb.AppendLine();
     }
 
@@ -288,13 +392,30 @@ public class MarkdownBuilder
 
     private void EmitCaret(StringBuilder sb, int page, CaretAnnotation caret)
     {
+        // A caret paired with a strikeout replaces the struck text; on its own it inserts.
+        if (_caretReplacements.TryGetValue(caret, out var child))
+        {
+            var struckText = GetMarkupText(child.page, child.annotIdx);
+            var replacement = CleanText(caret.Contents ?? "");
+
+            if (!string.IsNullOrWhiteSpace(struckText))
+                sb.AppendLine($"> ~~{struckText}~~ → **{replacement}**");
+            else
+                sb.AppendLine($"> Replace with **{replacement}**");
+
+            sb.AppendLine(">");
+            sb.AppendLine($"> {GetLabel(page, "suggested replacement")}");
+            sb.AppendLine();
+            return;
+        }
+
         if (!string.IsNullOrWhiteSpace(caret.Contents))
         {
             sb.AppendLine($"> **Comment:** {caret.Contents}");
             sb.AppendLine(">");
         }
 
-        sb.AppendLine($"> {GetLabel(page, "caret")}");
+        sb.AppendLine($"> {GetLabel(page, "suggested insertion")}");
         sb.AppendLine();
     }
 
@@ -368,7 +489,12 @@ public class MarkdownBuilder
         return $"**{highlightText}**";
     }
 
-    private static string HeadingKey(string title, int? page) => $"{title}||{page}";
+    /// <summary>
+    /// Stable identity for an outline entry. Public so callers that resolve heading positions
+    /// out of band (they need the PDF text service, which this class has no access to) can key
+    /// the map they pass as <c>headingPositions</c> the same way.
+    /// </summary>
+    internal static string HeadingKey(string title, int? page) => $"{title}||{page}";
 
     private static void BuildHeadingIndex(
         List<OutlineEntry> entries, int depth,
@@ -386,12 +512,15 @@ public class MarkdownBuilder
 
     private static void CollectHeadingsByPage(
         List<OutlineEntry> entries,
-        List<(string key, int? page)> result)
+        List<(string key, int? page, float y)> result,
+        Dictionary<string, float>? headingPositions)
     {
         foreach (var entry in entries)
         {
-            result.Add((HeadingKey(entry.Title, entry.Page), entry.Page));
-            CollectHeadingsByPage(entry.Children, result);
+            var key = HeadingKey(entry.Title, entry.Page);
+            var y = headingPositions != null && headingPositions.TryGetValue(key, out var found) ? found : 0f;
+            result.Add((key, entry.Page, y));
+            CollectHeadingsByPage(entry.Children, result, headingPositions);
         }
     }
 

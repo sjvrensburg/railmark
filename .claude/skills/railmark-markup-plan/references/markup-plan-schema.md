@@ -40,7 +40,13 @@ accumulate duplicate annotations in the source document). `-o -` (stdout) is not
 
 The `quote` field is the only link between your editorial judgment and the PDF's physical geometry — RailMark resolves it against the page's extracted text to find where to draw the markup. Rules:
 
-- Must be an **exact substring** of the page's text (matching is case-insensitive and tolerant of whitespace differences — extra/collapsed spaces, tabs, line-wraps — but **not** of paraphrasing, reordering, or substituted punctuation).
+- Must be an **exact substring** of the page's text, but matching normalises both sides first, so it is case-insensitive and tolerant of:
+  - whitespace differences — extra/collapsed spaces, tabs, line-wraps;
+  - **ligatures** — quoting `the first difficulty` matches a PDF containing `the ﬁrst diﬃculty`;
+  - **smart punctuation** — straight `"` and `'` match curly `“ ” ‘ ’`, and `...` matches `…`;
+  - **wrap hyphens** — quoting `interpretable in practice` matches a PDF that breaks it as `inter-\npretable in practice`. The resulting markup correctly spans both lines.
+
+  It is **not** tolerant of paraphrasing, reordering, or genuinely different punctuation (a comma you added, a dash you changed).
 - Must be **contiguous** — it cannot span a page break, and for best results keep it to one sentence or phrase rather than a whole paragraph (long quotes are more likely to hit a formatting difference somewhere in the middle).
 - Must come from **prose**, not the `--export` Markdown's own formatting — don't include `**bold**` markers, heading `#` characters, or table pipe characters as part of the quote; those are Markdown, not PDF text.
 - Type of markup that spans a single word (e.g. `underline` on a term) resolves most reliably. Long strikeouts across multiple sentences are more failure-prone.
