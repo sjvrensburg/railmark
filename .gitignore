@@ -56,3 +56,7 @@ nunit-*.xml
 # AppImage build artefacts
 build/
 dist/
+
+# Layout models fetched by scripts/download-model.sh (~124 MiB each)
+models/
+*.onnx

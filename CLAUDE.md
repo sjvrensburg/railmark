@@ -15,6 +15,8 @@ The `railmark-markup-plan` Claude Code skill (`.claude/skills/railmark-markup-pl
 - **Single test:** `dotnet test --filter "FullyQualifiedName~TestName"`
 - **Run:** `dotnet run --project RailMark/ -- <pdf> [-o output.md] [--pages] [--color] [--images] [--export]`
 - **Pack (AppImage):** `./build-appimage.sh [--include-model <path>]`
+- **Pack (tarball):** `./build-tarball.sh [--include-model <path>]`
+- **Fetch layout model:** `./scripts/download-model.sh` → `models/PP-DocLayoutV3.onnx`
 
 Solution file is `RailMark.slnx` (new XML `.slnx` format, not traditional `.sln`).
 
@@ -69,9 +71,24 @@ Three conventions coexist — be careful which you're using:
 
 `MarkupEntry.Page` in `--apply-markup` plans follows the CLI convention (1-based); `MarkupPlanService.Resolve()` converts to 0-based before touching `AnnotationFile.Pages` or calling `IPdfService`/`IPdfTextService`.
 
-### AppImage packaging
+### Packaging
 
-`build-appimage.sh` publishes a self-contained linux-x64 binary and packages it with `appimagetool`. All files (binary + `.so` libs) stay in `usr/bin/` — the .NET host requires its own libraries (`libhostpolicy.so`, `libcoreclr.so`, etc.) alongside the binary. `AppImage/AppRun` adds `usr/bin/` to `LD_LIBRARY_PATH` so third-party native libs (`libpdfium.so`, `libSkiaSharp.so`, `libonnxruntime.so`) are also found. `$APPDIR` is exported so `LayoutModelLocator` can probe `$APPDIR/models/` for a bundled ONNX model.
+Three release artifacts, all self-contained and all bundling `PP-DocLayoutV3.onnx`:
+
+- **AppImage** (`build-appimage.sh`) — publishes a self-contained linux-x64 binary and packages it with `appimagetool`. All files (binary + `.so` libs) stay in `usr/bin/` — the .NET host requires its own libraries (`libhostpolicy.so`, `libcoreclr.so`, etc.) alongside the binary. `AppImage/AppRun` adds `usr/bin/` to `LD_LIBRARY_PATH` so third-party native libs (`libpdfium.so`, `libSkiaSharp.so`, `libonnxruntime.so`) are also found. `$APPDIR` is exported so `LayoutModelLocator` can probe `$APPDIR/models/` for the bundled model.
+- **Tarball** (`build-tarball.sh`) — same binary in a plain directory for hosts without FUSE. Payload lives in `bin/`; a root-level `railmark` launcher reproduces AppRun's `LD_LIBRARY_PATH` + `APPDIR` contract.
+- **Windows zip** (CI only) — `dotnet publish -r win-x64 --self-contained`. Natives (`pdfium.dll`, `libSkiaSharp.dll`, `onnxruntime.dll`) resolve from the exe's own directory, so no launcher is needed.
+
+**Model discovery.** `LayoutModelLocator` composes `models` against several base directories. Three are confirmed by experiment: `$APPDIR/models/`, `AppConfig.ConfigDir` (`~/.config/railreader2/models/`), and `<app dir>/models/` — the last is what the Windows package relies on. Note that the second means a developer machine with RailReader2 installed finds a model even when the package under test bundles none; isolate `HOME`/`XDG_CONFIG_HOME` when testing the no-model fallback, or the test silently passes for the wrong reason.
+
+`scripts/download-model.sh` fetches the model and checks it against a pinned SHA-256, so an upstream change fails the build instead of shipping unnoticed. `models/` and `*.onnx` are gitignored.
+
+### CI
+
+- `.github/workflows/ci.yml` — build + test on push/PR, plus a `linux-x64`/`win-x64` publish matrix that asserts the native libraries actually land in the output. Windows packaging is otherwise only exercised at release time.
+- `.github/workflows/release.yml` — on a `v*` tag: verify the tag matches `<Version>` in `RailMark.csproj` **and** `VERSION` in `install.sh`, test, build and smoke-test all three artifacts, then open a **draft** release with them plus `SHA256SUMS`. Draft because releases carry hand-written notes. `workflow_dispatch` builds everything without releasing.
+
+Releasing therefore means: bump `RailMark.csproj` and `install.sh` together, merge, tag, then write the notes on the draft and publish.
 
 ## Testing
 

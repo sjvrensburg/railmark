@@ -22,7 +22,24 @@ This downloads the self-contained AppImage to `~/.local/bin/railmark`. Then:
 railmark document.pdf -o notes.md
 ```
 
-Or grab the AppImage manually from [Releases](https://github.com/sjvrensburg/railmark/releases) and put it anywhere on your `$PATH`.
+Or grab a build manually from [Releases](https://github.com/sjvrensburg/railmark/releases). Every release ships three artifacts, each self-contained (bundling the .NET runtime, the native libraries, and the ONNX layout model — nothing else to install) and each verifiable against the release's `SHA256SUMS`:
+
+| Artifact | Platform | Notes |
+|----------|----------|-------|
+| `railmark-<version>-linux-x86_64.AppImage` | Linux x86-64 | Recommended. Single executable; needs FUSE, or run with `--appimage-extract-and-run`. |
+| `railmark-<version>-linux-x86_64.tar.gz` | Linux x86-64 | Fallback for containers and images without FUSE. Extract, then run the `railmark` launcher at the package root. |
+| `railmark-<version>-win-x64.zip` | Windows x64 | Extract and run `railmark.exe`. |
+
+<details>
+<summary>Linux tarball install</summary>
+
+```bash
+mkdir -p ~/.local/opt ~/.local/bin
+tar -xzf railmark-<version>-linux-x86_64.tar.gz -C ~/.local/opt/
+ln -sf ~/.local/opt/railmark-<version>-linux-x86_64/railmark ~/.local/bin/railmark
+```
+
+</details>
 
 <details>
 <summary>Build from source</summary>
@@ -41,11 +58,24 @@ dotnet pack RailMark/
 dotnet tool install --global --add-source RailMark/nupkg RailMark
 ```
 
-Build the AppImage:
+Build the release artifacts. Both scripts take the same optional `--include-model`; without it, `--export` falls back to plain text instead of layout analysis:
 
 ```bash
-./build-appimage.sh [--include-model <onnx-model>]
+./scripts/download-model.sh                                   # fetch + verify PP-DocLayoutV3.onnx
+./build-appimage.sh  --include-model models/PP-DocLayoutV3.onnx
+./build-tarball.sh   --include-model models/PP-DocLayoutV3.onnx
 ```
+
+Windows packages are produced by CI; a local `dotnet publish -r win-x64 --self-contained` gives the same binary, with the model placed in a `models/` directory beside `railmark.exe`.
+
+</details>
+
+<details>
+<summary>Releases</summary>
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which tests, builds all three artifacts, smoke-tests each one, and opens a **draft** release with them and a `SHA256SUMS` file attached — so release notes can be written by hand before publishing.
+
+The tag must match `<Version>` in `RailMark.csproj` and `VERSION` in `install.sh`; the workflow fails early if they disagree. `workflow_dispatch` runs the same build without creating a release.
 
 </details>
 

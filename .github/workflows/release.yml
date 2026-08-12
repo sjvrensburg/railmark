@@ -1,0 +1,235 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Lets you exercise the whole pipeline without cutting a release: artifacts are
+  # built and uploaded to the workflow run, but no GitHub release is created.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  MODEL_NAME: PP-DocLayoutV3.onnx
+  # Keep in step with scripts/download-model.sh.
+  MODEL_SHA256: d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6
+
+jobs:
+  verify:
+    name: Verify & test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Read version from RailMark.csproj
+        id: version
+        run: |
+          version=$(grep '<Version>' RailMark/RailMark.csproj \
+            | sed 's/.*<Version>\(.*\)<\/Version>.*/\1/' | tr -d '[:space:]')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Project version: $version"
+
+      # A tag that disagrees with the csproj produces artifacts named after one
+      # version and a release named after another. Fail loudly instead.
+      - name: Check tag matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match <Version>${{ steps.version.outputs.version }}</Version> in RailMark.csproj." >&2
+            exit 1
+          fi
+
+      - name: Check install.sh matches project version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          script_version=$(grep '^VERSION=' install.sh | cut -d'"' -f2)
+          if [ "$script_version" != "${{ steps.version.outputs.version }}" ]; then
+            echo "install.sh VERSION=${script_version} does not match project version ${{ steps.version.outputs.version }}." >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: dotnet test -c Release
+
+  linux:
+    name: Linux (AppImage + tarball)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache layout model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: onnx-model-${{ env.MODEL_SHA256 }}
+
+      - name: Download layout model
+        run: ./scripts/download-model.sh
+
+      - name: Install appimagetool
+        run: |
+          curl -fL --retry 3 -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Build AppImage
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+          # GitHub runners have no FUSE, so appimagetool (itself an AppImage)
+          # must unpack rather than mount itself.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: ./build-appimage.sh --include-model "models/${MODEL_NAME}"
+
+      - name: Build tarball
+        run: ./build-tarball.sh --include-model "models/${MODEL_NAME}"
+
+      - name: Smoke test AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -eu
+          appimage=$(ls dist/*.AppImage)
+          chmod +x "$appimage"
+          "$appimage" --version
+          "$appimage" --help > /dev/null
+
+      - name: Smoke test tarball
+        run: |
+          set -eu
+          mkdir -p /tmp/tarcheck
+          tar -xzf dist/*.tar.gz -C /tmp/tarcheck
+          launcher=$(ls -d /tmp/tarcheck/*/railmark)
+          "$launcher" --version
+          "$launcher" --help > /dev/null
+          # The bundled model is the whole reason these artifacts are ~160 MB;
+          # a silently missing one would degrade --export with no other signal.
+          test -f "$(dirname "$launcher")/models/${MODEL_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows (zip)
+    needs: verify
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache layout model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: onnx-model-${{ env.MODEL_SHA256 }}
+
+      - name: Download layout model
+        run: ./scripts/download-model.sh
+
+      - name: Publish self-contained win-x64
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -eu
+          stage="build/railmark-${VERSION}-win-x64"
+          rm -rf "$stage"
+          dotnet publish RailMark/ -c Release -r win-x64 --self-contained true \
+            -p:DebugType=none -o "$stage"
+          # LayoutModelLocator probes <app dir>/models, so the model sits beside
+          # the exe — the Windows equivalent of the AppImage's $APPDIR/models.
+          mkdir -p "$stage/models"
+          cp "models/${MODEL_NAME}" "$stage/models/"
+          cp README.md LICENSE "$stage/"
+
+      - name: Check native dependencies were published
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -eu
+          stage="build/railmark-${VERSION}-win-x64"
+          for lib in pdfium.dll libSkiaSharp.dll onnxruntime.dll; do
+            test -f "$stage/$lib" || { echo "Missing $lib" >&2; exit 1; }
+            echo "  found $lib"
+          done
+
+      - name: Smoke test
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -eu
+          stage="build/railmark-${VERSION}-win-x64"
+          ./"$stage"/railmark.exe --version
+          ./"$stage"/railmark.exe --help > /dev/null
+
+      - name: Create zip
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p dist
+          # Zip from inside build/ so the archive root is the package directory
+          # itself rather than a stray build/ prefix.
+          (cd build && 7z a -tzip "../dist/railmark-${VERSION}-win-x64.zip" "railmark-${VERSION}-win-x64" > /dev/null)
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [verify, linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect artifacts and checksums
+        run: |
+          set -eu
+          mkdir -p dist
+          find artifacts -type f -exec mv {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS
+          ls -la
+          cat SHA256SUMS
+
+      # Created as a draft on purpose: releases here carry hand-written notes,
+      # and a draft lets you write them with the artifacts already attached.
+      # Drop --draft if you would rather publish straight from the tag.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --draft
