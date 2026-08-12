@@ -100,7 +100,7 @@ Because the xUnit tests fake the PDF services, nothing in them touches real pdfi
 
 ```bash
 ./tests/integration-smoke.sh dotnet run --project RailMark/ --
-./tests/integration-smoke.sh ./dist/railmark-0.9.0-linux-x86_64.AppImage
+./tests/integration-smoke.sh ./dist/railmark-<version>-linux-x86_64.AppImage
 ```
 
 It exports the fixture, applies a markup plan, and extracts the annotations back, asserting quote resolution across a wrap hyphen and straight-vs-curly quotes, all four markup subtypes, and heading assignment for two headings on one page. CI runs it in `ci.yml` and against each of the three release artifacts.
