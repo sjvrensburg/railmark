@@ -6,8 +6,8 @@
 #
 # Examples:
 #   ./tests/integration-smoke.sh dotnet run --project RailMark/ --
-#   ./tests/integration-smoke.sh ./dist/railmark-0.9.0-linux-x86_64.AppImage
-#   ./tests/integration-smoke.sh ./build/railmark-0.9.0-win-x64/railmark.exe
+#   ./tests/integration-smoke.sh ./dist/railmark-<version>-linux-x86_64.AppImage
+#   ./tests/integration-smoke.sh ./build/railmark-<version>-win-x64/railmark.exe
 #
 # The unit tests fake IPdfService/IPdfTextService, so nothing there touches real
 # pdfium geometry. These checks do: quote resolution against a real text layer,
