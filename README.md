@@ -173,8 +173,16 @@ See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for t
 
 ## Skill for AI agents
 
-For Claude Code / agent-driven document review, install the `railmark-markup-plan` skill from
-this repo:
+For Claude Code / agent-driven document review, use the `railmark-markup-plan` skill.
+
+**Easiest way:** point Claude Code at the skill file and ask it to install it — the file carries
+its own setup instructions, covering both the CLI and the skill itself, for Linux and Windows:
+
+```
+Install this skill: https://github.com/sjvrensburg/railmark/blob/main/.claude/skills/railmark-markup-plan/SKILL.md
+```
+
+Manually, from a clone of this repo:
 
 ```bash
 mkdir -p ~/.claude/skills
