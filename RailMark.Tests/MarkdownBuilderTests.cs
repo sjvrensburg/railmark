@@ -142,6 +142,21 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Image_Links_Use_Forward_Slashes_On_Every_Platform()
+    {
+        // Markdown link targets are URLs. Path.Combine emits a backslash on Windows, which no
+        // renderer resolves — the Windows CI job caught this on a real run.
+        var rect = new RectAnnotation { Color = "#00F", X = 50, Y = 50, W = 400, H = 200 };
+        var file = MakeFile([(0, [rect])]);
+        var images = new Dictionary<(int, int), string> { [(0, 0)] = "/abs/path/imgs/annotation_001.png" };
+
+        var md = Build(file, [H("Ch1", 0)], images: images, imageRelDir: "notes-images").Build();
+
+        Assert.Contains("(notes-images/annotation_001.png)", md);
+        Assert.DoesNotContain("\\", md);
+    }
+
+    [Fact]
     public void Rect_With_Image_Includes_Embed()
     {
         var rect = new RectAnnotation { Color = "#00F", X = 50, Y = 50, W = 400, H = 200 };

@@ -2,8 +2,8 @@
 
 A command-line tool that converts PDFs to structured Markdown, and writes AI-authored markup back into them. It has three modes:
 
-- **Annotation mode** (default) — extracts annotations from PDFs reviewed in [RailReader2](https://github.com/sjvrensburg/railreader2) (highlights, notes, rectangles, freehand, carets, free-text) and groups them under document headings.
-- **Export mode** (`--export`) — produces layout-aware full-document Markdown from *any* PDF, with optional VLM transcription of figures. RailReader2 annotations are folded in when present, but are not required.
+- **Annotation mode** (default) — extracts annotations from *any* annotated PDF (highlights, underlines, strikeouts, squigglies, notes, rectangles, freehand, carets, free-text) and groups them under document headings. It reads the annotations the PDF itself carries, so it does not matter which tool wrote them — Acrobat, Preview, Okular, Zotero, [RailReader2](https://github.com/sjvrensburg/railreader2), or RailMark's own `--apply-markup`. RailReader2 sidecar files are picked up too, for PDFs that cannot be written to.
+- **Export mode** (`--export`) — produces layout-aware full-document Markdown from *any* PDF, with optional VLM transcription of figures. Existing annotations are folded in when present, but are not required.
 - **Apply-markup mode** (`--apply-markup`) — writes real PDF annotations (highlight, underline, strikeout, squiggly, margin notes) from a JSON markup plan. Designed for an AI agent acting as a technical editor: quote a passage, say what kind of markup and why, and RailMark resolves the quote to exact PDF geometry and writes it in. See [Skill for AI agents](#skill-for-ai-agents) below.
 
 Built directly on the [RailReader.Core](https://github.com/sjvrensburg/RailReaderCore) NuGet packages — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.

@@ -440,7 +440,9 @@ public class MarkdownBuilder
         relativePath = "";
         if (_images == null || _imageRelDir == null) return false;
         if (!_images.TryGetValue((page, annotIdx), out var absPath)) return false;
-        relativePath = Path.Combine(_imageRelDir, Path.GetFileName(absPath));
+        // Markdown link targets are URLs, so the separator is always '/'. Path.Combine would
+        // emit a backslash on Windows, producing a link no renderer resolves.
+        relativePath = $"{_imageRelDir.Replace('\\', '/')}/{Path.GetFileName(absPath)}";
         return true;
     }
 
