@@ -297,7 +297,10 @@ public class MarkdownBuilder
             var pageText = _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
-                var bolded = BoldHighlightInContext(page, pageText, highlightedText);
+                // The context is page text emitted verbatim, so it still carries the extractor's
+                // invisible de-hyphenation markers. Strip them after the offsets have been used.
+                var bolded = TextLocator.StripInvisibleMarkers(
+                    BoldHighlightInContext(page, pageText, highlightedText));
                 sb.AppendLine($"> {bolded}");
             }
             else

@@ -596,6 +596,64 @@ public class MarkdownBuilderTests
         Assert.Null(TextLocator.ResolveQuote("some page text", "not on this page"));
     }
 
+    // --- Rebuilding multi-line markup text ---
+
+    [Fact]
+    public void SpanCoveringParts_Rejoins_A_Word_Split_Across_Lines()
+    {
+        // PdfTextService de-hyphenates as it extracts, leaving U+0002 where the hyphen was, so
+        // the two line rects yield "inter" and "pretable in practice".
+        var pageText = "The model is interpretable in practice, as shown.";
+
+        var span = TextLocator.SpanCoveringParts(pageText, ["inter", "pretable in practice"]);
+
+        Assert.Equal("interpretable in practice", span);
+        // CleanText drops the marker, so the word comes back whole rather than "inter pretable".
+        Assert.Equal("interpretable in practice", MarkdownBuilder.CleanText(span!));
+    }
+
+    [Fact]
+    public void SpanCoveringParts_Keeps_A_Space_For_An_Ordinary_Line_Wrap()
+    {
+        var pageText = "the quick brown fox\njumps over the lazy dog";
+
+        var span = TextLocator.SpanCoveringParts(pageText, ["brown fox", "jumps over"]);
+
+        Assert.Equal("brown fox\njumps over", span);
+        Assert.Equal("brown fox jumps over", MarkdownBuilder.CleanText(span!));
+    }
+
+    [Fact]
+    public void SpanCoveringParts_Matches_Parts_In_Order()
+    {
+        // "the" appears three times; the span must run from the first part's match onwards
+        // rather than latching onto an earlier occurrence.
+        var pageText = "the alpha the beta the gamma";
+
+        var span = TextLocator.SpanCoveringParts(pageText, ["beta", "the gamma"]);
+
+        Assert.Equal("beta the gamma", span);
+    }
+
+    [Fact]
+    public void SpanCoveringParts_Returns_Null_When_A_Part_Is_Not_Found()
+    {
+        Assert.Null(TextLocator.SpanCoveringParts("the quick brown fox", ["quick", "elephant"]));
+    }
+
+    [Fact]
+    public void SpanCoveringParts_Handles_A_Single_Part()
+    {
+        Assert.Equal("brown fox", TextLocator.SpanCoveringParts("the quick brown fox", ["brown fox"]));
+    }
+
+    [Fact]
+    public void SpanCoveringParts_Returns_Null_For_No_Usable_Parts()
+    {
+        Assert.Null(TextLocator.SpanCoveringParts("the quick brown fox", []));
+        Assert.Null(TextLocator.SpanCoveringParts("the quick brown fox", ["   "]));
+    }
+
     // --- Label ---
 
     [Fact]

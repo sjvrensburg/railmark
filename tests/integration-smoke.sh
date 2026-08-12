@@ -96,6 +96,16 @@ echo "[3/3] annotation extraction"
 "${RAILMARK[@]}" "${WORK}/marked.pdf" -o "${WORK}/annots.md" > /dev/null
 
 check "4 annotations found"     "${WORK}/annots.md" "**4 annotations**"
+# The highlight spans a wrap hyphen. Its text is extracted one rect per visual
+# line, and the parts must be rejoined via the page text — joining them with a
+# space would render "inter pretable".
+check "wrap-hyphen highlight rejoined" "${WORK}/annots.md" "interpretable in practice"
+if grep -qF "inter pretable" "${WORK}/annots.md"; then
+    echo "  FAIL wrap-hyphen highlight rendered as \"inter pretable\"" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   no split-word artefact"
+fi
 check "strikeout rendered"      "${WORK}/annots.md" "~~paragraph sits under the second heading~~"
 check "strikeout labelled"      "${WORK}/annots.md" "suggested deletion"
 # Marked-up text goes through CleanText, which normalises the PDF's curly

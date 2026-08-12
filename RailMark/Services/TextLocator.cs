@@ -127,6 +127,49 @@ internal static class TextLocator
     }
 
     /// <summary>
+    /// Removes the invisible markers PdfTextService leaves in extracted text — the soft hyphen and
+    /// the U+0002/U+0003 de-hyphenation markers — without touching anything else, line breaks in
+    /// particular. Use when emitting page text verbatim into Markdown, where the markers would
+    /// otherwise ride along as unprintable characters and split a de-hyphenated word in two.
+    /// </summary>
+    internal static string StripInvisibleMarkers(string text)
+        => text.Replace("\u0002", "").Replace("\u0003", "").Replace("\u00AD", "");
+
+    /// <summary>
+    /// Rebuilds the page-text span covered by a multi-line text-markup annotation, given the text
+    /// extracted from each of its per-line rects.
+    /// </summary>
+    /// <remarks>
+    /// Joining the per-line parts with a space is wrong when the producer split a word across the
+    /// break: <c>PdfTextService</c> already de-hyphenates, so the text layer records that join as a
+    /// soft-hyphen marker (U+0002) rather than a space, and a space would put the word back
+    /// together as "inter pretable". Locating the parts back in the page text recovers whatever
+    /// actually sat between them — the marker for a split word, a newline for an ordinary wrap —
+    /// and <see cref="CleanText"/> then resolves either correctly.
+    /// Returns <c>null</c> when the parts cannot be located verbatim and in order, leaving the
+    /// caller to fall back to a plain join.
+    /// </remarks>
+    internal static string? SpanCoveringParts(string pageText, IReadOnlyList<string> parts)
+    {
+        int firstStart = -1, lastEnd = -1, cursor = 0;
+
+        foreach (var part in parts)
+        {
+            var needle = part.Trim();
+            if (needle.Length == 0) continue;
+
+            var idx = pageText.IndexOf(needle, cursor, StringComparison.Ordinal);
+            if (idx < 0) return null;
+
+            if (firstStart < 0) firstStart = idx;
+            lastEnd = idx + needle.Length;
+            cursor = lastEnd;
+        }
+
+        return firstStart < 0 ? null : pageText[firstStart..lastEnd];
+    }
+
+    /// <summary>
     /// Resolves <paramref name="quote"/> to an exact (CharStart, CharLength) range within
     /// <paramref name="pageText"/>. Tier 1: exact case-insensitive match. Tier 2: normalised
     /// match (whitespace, ligatures, smart quotes, soft hyphens), translated back to original
