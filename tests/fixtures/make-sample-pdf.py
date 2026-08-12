@@ -15,6 +15,15 @@ geometry can test, and nothing else:
   * Curly quotes, so a quote written with straight ones has to normalise.
   * A page 2 with its own bookmark, so quotes are page-scoped.
 
+It also carries annotations for the `--images` path, which needs geometry that
+renders to something visible:
+
+  * A /Square over the "Introduction" heading — a region with known, non-blank
+    content, so a crop of it can be checked for not being uniformly white.
+    (Cropping the wrong half of the page produced exactly that; see issue #22.)
+  * Three /Ink strokes on page 2: two within the 50pt merge distance of each
+    other and one far away, so freehand grouping produces two images, not three.
+
 Usage:  python3 tests/fixtures/make-sample-pdf.py [output.pdf]
 """
 
@@ -74,6 +83,14 @@ page2_lines = [
 ]
 
 
+def ink_annot(rect, inklist, label):
+    return (
+        b"<< /Type /Annot /Subtype /Ink /Rect " + rect +
+        b" /InkList " + inklist +
+        b" /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (" + label + b") >>"
+    )
+
+
 def build():
     objects = {}
 
@@ -81,11 +98,13 @@ def build():
     objects[2] = b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"
     objects[3] = (
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>"
+        b"/Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R "
+        b"/Annots [12 0 R] >>"
     )
     objects[4] = (
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"
+        b"/Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R "
+        b"/Annots [13 0 R 14 0 R 15 0 R] >>"
     )
 
     for num, lines in ((5, page1_lines), (6, page2_lines)):
@@ -113,6 +132,32 @@ def build():
         b"<< /Title (Results) /Parent 8 0 R /Prev 10 0 R "
         b"/Dest [4 0 R /XYZ 72 720 0] >>"
     )
+
+    # Annotations. Coordinates here are PDF-native (bottom-up); the annotation
+    # store converts them to top-down when loading, which is the convention
+    # ScreenshotService works in.
+    #
+    # Square over "Introduction" (drawn at y=720) and the first body line.
+    objects[12] = (
+        b"<< /Type /Annot /Subtype /Square /Rect [66 690 320 732] "
+        b"/C [1 0 0] /CA 1 /F 4 /T (fixture) /Contents (heading box) >>"
+    )
+
+    # Ink strokes. The renderer draws page content only — annotation appearances
+    # are not painted into the bitmap — so a crop shows whatever text lies under
+    # the stroke. All three therefore sit over page 2's text, which is what makes
+    # "the crop is not blank" a meaningful check on the coordinate mapping.
+    #
+    # All three sit over page 2's body text, below the "Results" heading, so they
+    # file under it. (Placed over the heading instead, they land marginally above
+    # its top edge and file under the *previous* section — correct, but a
+    # confusing thing for a fixture to assert.)
+    #
+    # Two strokes ~20pt apart — inside the 50pt merge distance, so one image.
+    objects[13] = ink_annot(b"[100 670 140 700]", b"[[100 675 120 695 140 680]]", b"stroke a")
+    objects[14] = ink_annot(b"[155 670 195 700]", b"[[160 675 180 695 190 680]]", b"stroke b")
+    # Same lines, far to the right — >50pt away horizontally, so its own image.
+    objects[15] = ink_annot(b"[395 660 455 695]", b"[[400 665 425 690 450 670]]", b"stroke c")
 
     out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offsets = {}

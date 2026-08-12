@@ -7,10 +7,10 @@ endobj
 << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R /Annots [12 0 R] >>
 endobj
 4 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R /Annots [13 0 R 14 0 R 15 0 R] >>
 endobj
 5 0 obj
 << /Length 581 >>
@@ -75,22 +75,38 @@ endobj
 11 0 obj
 << /Title (Results) /Parent 8 0 R /Prev 10 0 R /Dest [4 0 R /XYZ 72 720 0] >>
 endobj
+12 0 obj
+<< /Type /Annot /Subtype /Square /Rect [66 690 320 732] /C [1 0 0] /CA 1 /F 4 /T (fixture) /Contents (heading box) >>
+endobj
+13 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [100 670 140 700] /InkList [[100 675 120 695 140 680]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke a) >>
+endobj
+14 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [155 670 195 700] /InkList [[160 675 180 695 190 680]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke b) >>
+endobj
+15 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [395 660 455 695] /InkList [[400 665 425 690 450 670]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke c) >>
+endobj
 xref
-0 12
+0 16
 0000000000 65535 f 
 0000000015 00000 n 
 0000000080 00000 n 
 0000000143 00000 n 
-0000000269 00000 n 
-0000000395 00000 n 
-0000001027 00000 n 
-0000001301 00000 n 
-0000001398 00000 n 
-0000001470 00000 n 
-0000001568 00000 n 
-0000001674 00000 n 
+0000000286 00000 n 
+0000000443 00000 n 
+0000001075 00000 n 
+0000001349 00000 n 
+0000001446 00000 n 
+0000001518 00000 n 
+0000001616 00000 n 
+0000001722 00000 n 
+0000001816 00000 n 
+0000001950 00000 n 
+0000002116 00000 n 
+0000002282 00000 n 
 trailer
-<< /Size 12 /Root 1 0 R >>
+<< /Size 16 /Root 1 0 R >>
 startxref
-1768
+2448
 %%EOF

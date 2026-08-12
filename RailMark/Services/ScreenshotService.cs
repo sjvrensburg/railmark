@@ -91,7 +91,7 @@ public static class ScreenshotService
         return Task.FromResult(result);
     }
 
-    private static List<List<int>> GroupFreehandAnnotations(List<Annotation> annotations, List<int> indices)
+    internal static List<List<int>> GroupFreehandAnnotations(List<Annotation> annotations, List<int> indices)
     {
         if (indices.Count == 0) return [];
 
@@ -131,7 +131,7 @@ public static class ScreenshotService
         return [.. groupMap.Values];
     }
 
-    private static double BBoxDistance(
+    internal static double BBoxDistance(
         (float minX, float minY, float maxX, float maxY) a,
         (float minX, float minY, float maxX, float maxY) b)
     {
@@ -140,7 +140,7 @@ public static class ScreenshotService
         return Math.Sqrt(dx * dx + dy * dy);
     }
 
-    private static (float x, float y, float w, float h)? GetGroupBounds(
+    internal static (float x, float y, float w, float h)? GetGroupBounds(
         List<Annotation> annotations, List<int> indices)
     {
         float minX = float.MaxValue, minY = float.MaxValue;
@@ -161,12 +161,14 @@ public static class ScreenshotService
         return any ? (minX, minY, maxX - minX, maxY - minY) : null;
     }
 
-    private static SKRectI? ToPixelRect(float x, float y, float w, float h, int bmpW, int bmpH)
+    internal static SKRectI? ToPixelRect(float x, float y, float w, float h, int bmpW, int bmpH)
     {
-        // PDF y-axis has origin at the bottom-left; bitmap y-axis has origin at the top-left.
-        // Flip: pixel top = bmpH - (y + h) * Scale
+        // Annotation coordinates are top-down: CompositeAnnotationStore converts out of the PDF's
+        // bottom-up space when it loads them, and the bitmap is top-down too, so this is a plain
+        // scale. It previously flipped the y-axis here, which mirrored every crop vertically
+        // (issue #22) — the flip had already been applied by the store.
         var px = (int)(x * Scale) - PaddingPx;
-        var py = bmpH - (int)((y + h) * Scale) - PaddingPx;
+        var py = (int)(y * Scale) - PaddingPx;
         var pw = (int)(w * Scale) + PaddingPx * 2;
         var ph = (int)(h * Scale) + PaddingPx * 2;
 
@@ -178,7 +180,7 @@ public static class ScreenshotService
         return pw > 0 && ph > 0 ? new SKRectI(px, py, px + pw, py + ph) : null;
     }
 
-    private static void CropAndSave(SKBitmap source, SKRectI rect, string outputPath)
+    internal static void CropAndSave(SKBitmap source, SKRectI rect, string outputPath)
     {
         using var cropped = new SKBitmap(rect.Width, rect.Height);
         using var canvas = new SKCanvas(cropped);

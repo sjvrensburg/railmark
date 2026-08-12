@@ -44,7 +44,7 @@ echo "Command:  ${RAILMARK[*]}"
 echo ""
 
 # --- 1. Export -------------------------------------------------------------
-echo "[1/3] --export"
+echo "[1/4] --export"
 "${RAILMARK[@]}" "$FIXTURE" --export --no-vlm -o "${WORK}/export.md" > /dev/null
 
 check "heading Introduction"   "${WORK}/export.md" "Introduction"
@@ -53,19 +53,23 @@ check "heading Results"        "${WORK}/export.md" "Results"
 check "page 2 text present"    "${WORK}/export.md" "consistent across every run"
 check "curly quotes preserved" "${WORK}/export.md" "“the best available option”"
 
-# The fixture splits this word across a line break with a wrap hyphen. The
-# export rejoins it but leaves U+0002 where the hyphen was — its own soft-hyphen
-# marker — so the rendered word reads correctly but is not literally that
-# string. Strip the markers before checking (TextLocator strips them too, which
-# is why a quote copied out of this output still resolves).
-tr -d '\002\003' < "${WORK}/export.md" > "${WORK}/export.stripped.md"
-check "wrap hyphen rejoined"   "${WORK}/export.stripped.md" "interpretable in practice"
+# The fixture splits this word across a line break with a wrap hyphen, and the
+# export must rejoin it. Up to RailReader.Core 0.56.0 the output carried U+0002
+# where the hyphen had been (RailReaderCore#101) and this had to be stripped
+# before comparing; 0.56.1 emits the joined word, so assert on it directly.
+check "wrap hyphen rejoined"   "${WORK}/export.md" "interpretable in practice"
+if grep -qP '[\x02\x03]' "${WORK}/export.md"; then
+    echo "  FAIL export output contains soft-hyphen markers (RailReaderCore#101 regression)" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   export output carries no invisible markers"
+fi
 
 # --- 2. Apply markup -------------------------------------------------------
 # Each quote is written the way an AI agent would write it, not the way the PDF
 # stores it: across a wrap hyphen, and with straight quotes for curly ones.
 echo ""
-echo "[2/3] --apply-markup"
+echo "[2/4] --apply-markup"
 cat > "${WORK}/plan.json" <<'PLAN'
 {"entries":[
  {"page":1,"quote":"interpretable in practice","type":"highlight","comment":"spans a wrap hyphen"},
@@ -92,10 +96,13 @@ check "wrap-hyphen highlight spans 2 lines" "${WORK}/apply.json" '"spanCount":2'
 
 # --- 3. Extract the annotations back ---------------------------------------
 echo ""
-echo "[3/3] annotation extraction"
+echo "[3/4] annotation extraction"
 "${RAILMARK[@]}" "${WORK}/marked.pdf" -o "${WORK}/annots.md" > /dev/null
 
-check "4 annotations found"     "${WORK}/annots.md" "**4 annotations**"
+# The fixture ships 4 annotations of its own (a square and three ink strokes),
+# and the plan above adds 4 more.
+check "8 annotations found"     "${WORK}/annots.md" "**8 annotations**"
+check "freehand grouped under its heading" "${WORK}/annots.md" "| Results | 1 | 0 | 0 | 3 | 0 |"
 # The highlight spans a wrap hyphen. Its text is extracted one rect per visual
 # line, and the parts must be rejoined via the page text — joining them with a
 # space would render "inter pretable".
@@ -121,6 +128,51 @@ if awk '/^## Methods/{m=1} m && /paragraph sits under the second heading/{found=
 else
     echo "  FAIL annotation below the second heading was not filed under it" >&2
     failures=$((failures + 1))
+fi
+
+
+# --- 4. Screenshots ---------------------------------------------------------
+# The fixture carries a /Square over the "Introduction" heading and three /Ink
+# strokes on page 2 — two within the 50pt merge distance, one far away.
+echo ""
+echo "[4/4] --images"
+"${RAILMARK[@]}" "$FIXTURE" --images -o "${WORK}/shots.md" > /dev/null
+
+shot_dir="${WORK}/shots-images"
+if [ -d "$shot_dir" ]; then
+    echo "  ok   image directory created"
+else
+    echo "  FAIL no image directory at ${shot_dir}" >&2
+    failures=$((failures + 1))
+fi
+
+# Four annotations, but the two near strokes share a crop, so three files.
+shot_count=$(find "$shot_dir" -name '*.png' 2>/dev/null | wc -l)
+if [ "$shot_count" -eq 3 ]; then
+    echo "  ok   4 annotations produced 3 images (near strokes share one)"
+else
+    echo "  FAIL expected 3 images from 4 annotations, got ${shot_count}" >&2
+    failures=$((failures + 1))
+fi
+
+check "images referenced in Markdown" "${WORK}/shots.md" "shots-images/annotation_001.png"
+
+# A crop from the wrong part of the page lands on blank paper. Every annotation
+# here sits over text, so every crop must carry real content — this is what
+# catches a coordinate regression (issue #22) in the assembled artifact.
+blank=0
+for png in "$shot_dir"/*.png; do
+    [ -e "$png" ] || continue
+    size=$(wc -c < "$png")
+    if [ "$size" -lt 2000 ]; then
+        echo "  FAIL $(basename "$png") is ${size} bytes — looks like a blank crop" >&2
+        blank=$((blank + 1))
+    fi
+done
+if [ "$blank" -eq 0 ]; then
+    echo "  ok   no blank crops"
+else
+    failures=$((failures + blank))
 fi
 
 echo ""
