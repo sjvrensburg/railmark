@@ -33,6 +33,7 @@ string? vlmApiKey = null;
 string? markupPlanPath = null;
 bool dryRun = false;
 bool inPlace = false;
+AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -73,6 +74,17 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--in-place":
             inPlace = true;
+            break;
+        case "--accelerator" when i + 1 < args.Length:
+            var acceleratorArg = args[++i];
+            switch (acceleratorArg.ToLowerInvariant())
+            {
+                case "gpu": accelerator = AcceleratorPreference.Gpu; break;
+                case "cpu": accelerator = AcceleratorPreference.Cpu; break;
+                default:
+                    Console.Error.WriteLine($"Error: Unknown --accelerator value: {acceleratorArg} (expected cpu or gpu)");
+                    return 1;
+            }
             break;
         default:
             if (!args[i].StartsWith('-'))
@@ -280,6 +292,7 @@ if (exportMode)
         InsertPageBreaks = true,
         PageRange = pagesArg,
         VlmEndpoint = vlmConfig,
+        Accelerator = accelerator,
     };
 
     var exporter = new MarkdownExportService(factory);
@@ -604,6 +617,10 @@ static void PrintUsage()
           --vlm-endpoint <url> Override VLM endpoint URL (with --export)
           --vlm-model <name>   Override VLM model name (with --export)
           --vlm-api-key <key>  Override VLM API key (with --export)
+          --accelerator <cpu|gpu>
+                               Layout-model inference backend (with --export, default: cpu).
+                               gpu opportunistically uses a native WebGPU execution provider
+                               and falls back to cpu if no device is available.
           --apply-markup <plan.json>
                                Write PDF markup (highlight/underline/strikeout/note) from a
                                JSON markup plan into a new PDF (default: <pdf-stem>-marked.pdf,
