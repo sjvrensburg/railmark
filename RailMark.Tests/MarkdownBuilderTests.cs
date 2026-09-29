@@ -144,6 +144,34 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Replies_Are_Threaded_Under_Their_Parent()
+    {
+        var file = MakeFile(
+        [
+            (0,
+            [
+                new TextNoteAnnotation { NativeId = "reply-2", InReplyTo = "p1", Y = 90, Contents = "Second answer.", Author = "Bob" },
+                new HighlightAnnotation { NativeId = "p1", Rects = [new(50, 50, 100, 10)], Contents = "Question?", Author = "Ann" },
+                new TextNoteAnnotation { NativeId = "p1#reply-a", Y = 70, Contents = "First answer.", Author = "AI Reviewer" },
+                new TextNoteAnnotation { NativeId = "p1#reply-a#reply-b", Y = 200, Contents = "Follow-up.", Author = "Ann" },
+                new TextNoteAnnotation { NativeId = "orphan#reply-c", Y = 300, Contents = "Lost reply." },
+            ]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 1)] = "brown fox" };
+
+        var md = Build(file, [H("Chapter 1", 0)], hlTexts).Build();
+
+        var first = md.IndexOf("> > **Reply — AI Reviewer:** First answer.", StringComparison.Ordinal);
+        var nested = md.IndexOf("> > > **Reply — Ann:** Follow-up.", StringComparison.Ordinal);
+        var second = md.IndexOf("> > **Reply — Bob:** Second answer.", StringComparison.Ordinal);
+        Assert.True(md.IndexOf("Question?", StringComparison.Ordinal) < first, md);
+        Assert.True(first < nested && nested < second, md);
+        // Threaded replies are not repeated as standalone notes; an orphan still is.
+        Assert.DoesNotContain("**Note:** First answer.", md);
+        Assert.Contains("> **Note:** Lost reply.", md);
+    }
+
+    [Fact]
     public void Highlight_Without_Page_Text_Shows_Bold_Highlight()
     {
         var file = MakeFile([(0, [new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] }])]);

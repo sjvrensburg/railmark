@@ -26,6 +26,8 @@ public class MarkdownBuilder
     private readonly Dictionary<CaretAnnotation, (int page, int annotIdx)> _caretReplacements = [];
     // (page, annotIdx) of annotations rendered as part of another annotation, not on their own.
     private readonly HashSet<(int page, int annotIdx)> _groupChildren = [];
+    // Reply notes, keyed by the annotation they answer, in reading order — rendered beneath it.
+    private readonly Dictionary<(int page, int annotIdx), List<(int page, int annotIdx)>> _replies = [];
     // Markup split over a page break: head (page, annotIdx) → its continuation on the next page.
     private Dictionary<(int page, int annotIdx), (int page, int annotIdx)> _continuations = [];
 
@@ -64,6 +66,7 @@ public class MarkdownBuilder
         _continuations = ContinuationMarkup.Pair(_annotations);
         foreach (var tail in _continuations.Values)
             _groupChildren.Add(tail);
+        BuildReplyThreads();
 
         // Group annotations by heading
         var grouped = new Dictionary<string, List<(int page, int annotIdx, Annotation annotation)>>();
@@ -148,6 +151,56 @@ public class MarkdownBuilder
         }
     }
 
+    /// <summary>
+    /// Threads reply notes under the annotation they answer. A reply whose parent is not in the
+    /// file, or is itself rendered as part of another entry, stays where it is as an ordinary note.
+    /// </summary>
+    private void BuildReplyThreads()
+    {
+        var byId = new Dictionary<string, (int page, int annotIdx)>(StringComparer.Ordinal);
+        foreach (var (pageIdx, annotations) in _annotations.Pages)
+            for (int i = 0; i < annotations.Count; i++)
+                if (!string.IsNullOrEmpty(annotations[i].NativeId))
+                    byId.TryAdd(annotations[i].NativeId!, (pageIdx, i));
+
+        var replies = new List<((int page, int annotIdx) reply, (int page, int annotIdx) parent)>();
+        foreach (var (pageIdx, annotations) in _annotations.Pages)
+        {
+            for (int i = 0; i < annotations.Count; i++)
+            {
+                if (annotations[i] is not TextNoteAnnotation note) continue;
+                if (ReplyMarkup.ParentOf(note) is not { } parentId) continue;
+                if (!byId.TryGetValue(parentId, out var parent) || _groupChildren.Contains(parent)) continue;
+                replies.Add(((pageIdx, i), parent));
+            }
+        }
+
+        foreach (var (reply, parent) in replies
+                     .OrderBy(r => r.reply.page)
+                     .ThenBy(r => HeadingIndex.SortY(_annotations.Pages[r.reply.page][r.reply.annotIdx])))
+        {
+            if (!_replies.TryGetValue(parent, out var list))
+                _replies[parent] = list = [];
+            list.Add(reply);
+            _groupChildren.Add(reply);
+        }
+    }
+
+    private void EmitReplies(StringBuilder sb, (int page, int annotIdx) parent, int depth = 1)
+    {
+        if (!_replies.TryGetValue(parent, out var replies)) return;
+
+        var quote = string.Concat(Enumerable.Repeat("> ", depth + 1)).TrimEnd();
+        foreach (var reply in replies)
+        {
+            var note = _annotations.Pages[reply.page][reply.annotIdx];
+            var author = string.IsNullOrWhiteSpace(note.Author) ? "" : $" — {note.Author}";
+            sb.AppendLine($"{quote} **Reply{author}:** {note.EffectiveContents}");
+            sb.AppendLine();
+            EmitReplies(sb, reply, depth + 1);
+        }
+    }
+
     private void EmitSummary(
         StringBuilder sb,
         List<(string key, string title, int depth)> headingOrder,
@@ -200,6 +253,7 @@ public class MarkdownBuilder
                 suppressImage = true;
 
             EmitAnnotation(sb, page, annotIdx, annotation, suppressImage);
+            EmitReplies(sb, (page, annotIdx));
         }
     }
 

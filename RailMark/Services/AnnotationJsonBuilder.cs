@@ -112,7 +112,7 @@ public class AnnotationJsonBuilder(
                 Color = annotation.Color,
                 Author = NullIfEmpty(annotation.Author),
                 Heading = headings.TitleOf(headings.KeyFor(page, HeadingIndex.SortY(annotation))),
-                InReplyTo = NullIfEmpty(annotation.InReplyTo),
+                InReplyTo = NullIfEmpty(ReplyMarkup.ParentOf(annotation)),
                 // The replacement tag is RailMark's own bookkeeping, already expressed by type.
                 Subject = replacement != null ? null : NullIfEmpty(annotation.Subject),
                 State = annotation.State == ReviewState.None ? null : annotation.State.ToString().ToLowerInvariant(),

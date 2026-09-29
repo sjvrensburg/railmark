@@ -6,7 +6,7 @@ using RailReader.Core.Services;
 
 namespace RailMark.Services;
 
-public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0)
+public record MarkupEntryResult(int Page, string? Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0)
 {
     /// <summary>How many times the quote occurs on the page, before any context filtering.</summary>
     public int MatchCount { get; init; }
@@ -22,6 +22,10 @@ public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Su
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Action { get; init; }
+
+    /// <summary>The id of the annotation the entry replied to, echoed from the plan.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InReplyTo { get; init; }
 
     /// <summary>
     /// Set when the quote runs over a page break: the 1-based page it ends on. The markup is then
@@ -48,6 +52,9 @@ public sealed class MarkupPlanApplyResult
 public static class MarkupPlanService
 {
     private const float NoteMarginInset = 24f;
+
+    /// <summary>Vertical step, in points, between successive reply notes beside one annotation.</summary>
+    private const float ReplyStep = 20f;
 
     /// <summary>
     /// How far apart, in points, two annotations' geometry may be and still count as covering the
@@ -119,6 +126,7 @@ public static class MarkupPlanService
         // report preserves plan order regardless of how geometry lookups are batched.
         var results = new MarkupEntryResult?[plan.Entries.Count];
         var placements = new List<Placement>?[plan.Entries.Count];
+        var replyAnchors = new Annotation?[plan.Entries.Count];
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
@@ -136,6 +144,34 @@ public static class MarkupPlanService
                 continue;
             }
 
+            if (entry.InReplyTo is { } parentId)
+            {
+                var parent = file.Pages.GetValueOrDefault(pageIndex)?.FirstOrDefault(a => a.NativeId == parentId);
+                if (parent is null)
+                {
+                    var elsewhere = file.Pages.FirstOrDefault(p => p.Value.Any(a => a.NativeId == parentId));
+                    results[index] = Failure(entry, elsewhere.Value is not null
+                        ? $"Annotation {parentId} is on page {elsewhere.Key + 1}, not page {entry.Page}."
+                        : $"No annotation with id {parentId} on page {entry.Page}"
+                          + (replaceAuthor is null ? "." : $" (it may have been removed by --replace-author \"{replaceAuthor}\")."));
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(entry.Quote))
+                {
+                    // Nothing to locate: the reply is anchored to its parent.
+                    replyAnchors[index] = parent;
+                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
+                    {
+                        InReplyTo = parentId,
+                        Context = includeContext
+                            ? $"reply to the {AnnotationJsonBuilder.TypeName(parent)} by {parent.Author ?? "unknown author"}"
+                            : null,
+                    };
+                    continue;
+                }
+            }
+
             var page = PageText(pageIndex);
             var (match, failure) = Locate(entry, page);
             if (match is not null)
@@ -143,6 +179,7 @@ public static class MarkupPlanService
                 placements[index] = [new Placement(pageIndex, match.Value.Match.CharStart, match.Value.Match.CharLength)];
                 results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
                 {
+                    InReplyTo = entry.InReplyTo,
                     MatchCount = match.Value.MatchCount,
                     Warning = match.Value.Warning,
                     Context = includeContext ? TextLocator.DescribeContext(page, match.Value.Match) : null,
@@ -154,7 +191,7 @@ public static class MarkupPlanService
             if (failure!.MatchCount == 0 && entry.Occurrence is null or 1 && pageIndex + 1 < pdf.PageCount)
             {
                 var nextPage = PageText(pageIndex + 1);
-                if (TextLocator.FindAcrossPageBreak(page, nextPage, entry.Quote) is { } split
+                if (TextLocator.FindAcrossPageBreak(page, nextPage, entry.Quote!) is { } split
                     && TextLocator.HasContext(page, split.Head, entry.ContextBefore, null)
                     && TextLocator.HasContext(nextPage, split.Tail, null, entry.ContextAfter))
                 {
@@ -165,6 +202,7 @@ public static class MarkupPlanService
                     ];
                     results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
                     {
+                        InReplyTo = entry.InReplyTo,
                         MatchCount = 1,
                         EndPage = entry.Page + 1,
                         Context = includeContext
@@ -202,8 +240,16 @@ public static class MarkupPlanService
         // Pass 3 — build and merge annotations, in plan order.
         for (int index = 0; index < plan.Entries.Count; index++)
         {
-            if (placements[index] is not { } entryPlacements) continue;
             var entry = plan.Entries[index];
+            if (replyAnchors[index] is { } anchor)
+            {
+                var pageIndex = entry.Page - 1;
+                var note = BuildReplyNote(entry, anchor, file.Pages[pageIndex], pdf, pageIndex);
+                results[index] = results[index]! with { Action = Merge(file, pageIndex, note) };
+                continue;
+            }
+
+            if (placements[index] is not { } entryPlacements) continue;
             if (geometry[index].Any(rects => rects.Count == 0))
             {
                 results[index] = Failure(entry, $"Quote matched on page {entry.Page} but produced no geometry.")
@@ -221,6 +267,8 @@ public static class MarkupPlanService
                 var annotation = part == 0
                     ? BuildAnnotation(entry, geometry[index][part], pdf, pageIndex)
                     : BuildContinuation(entry, geometry[index][part]);
+                if (part == 0 && entry.InReplyTo is { } parentId)
+                    MarkAsReply(annotation, parentId);
                 actions.Add(Merge(file, pageIndex, annotation));
             }
 
@@ -286,6 +334,16 @@ public static class MarkupPlanService
     {
         if (a.GetType() != b.GetType()) return false;
         if (!string.Equals(a.Author, b.Author, StringComparison.Ordinal)) return false;
+
+        // A reply is identified by what it answers and what it says, not where it sits: one
+        // parent can collect several replies from the same author, and where each is pinned
+        // depends on how many came before it.
+        var parentA = ReplyMarkup.ParentOf(a);
+        var parentB = ReplyMarkup.ParentOf(b);
+        if (parentA != null || parentB != null)
+            return parentA == parentB
+                && NormalizeContents(a.EffectiveContents) == NormalizeContents(b.EffectiveContents);
+
         // A suggested replacement and a plain deletion over the same words are different edits,
         // and so are a markup and the continuation of one that started on the previous page.
         if (ReplacementMarkup.TryParse(a, out _, out _) != ReplacementMarkup.TryParse(b, out _, out _)) return false;
@@ -322,7 +380,7 @@ public static class MarkupPlanService
         if (entry.Occurrence is < 1)
             return (null, Failure(entry, $"occurrence must be 1 or greater (got {entry.Occurrence})."));
 
-        var all = TextLocator.FindQuoteMatches(page, entry.Quote);
+        var all = TextLocator.FindQuoteMatches(page, entry.Quote!);
         if (all.Count == 0)
             return (null, Failure(entry, $"Quote not found on page {entry.Page}."));
 
@@ -357,6 +415,16 @@ public static class MarkupPlanService
     /// <summary>Checks the fields that only make sense for some types; null when the entry is valid.</summary>
     private static string? Validate(MarkupEntry entry)
     {
+        if (string.IsNullOrWhiteSpace(entry.Quote))
+        {
+            if (entry.InReplyTo is null)
+                return "quote is required (it may be omitted only by a note replying to an annotation via inReplyTo).";
+            if (entry.Type != MarkupType.Note)
+                return $"A reply without a quote must be a note (this entry is {entry.Type.ToString().ToLowerInvariant()}).";
+            if (entry.Occurrence != null || entry.ContextBefore != null || entry.ContextAfter != null)
+                return "occurrence, contextBefore and contextAfter need a quote to apply to.";
+        }
+
         if (entry.Type == MarkupType.Replace && string.IsNullOrEmpty(entry.Replacement))
             return "A replace entry needs a non-empty replacement (use strikeout to suggest a deletion).";
         if (entry.Type != MarkupType.Replace && entry.Replacement != null)
@@ -400,6 +468,50 @@ public static class MarkupPlanService
 
         return merged;
     }
+
+    private static void MarkAsReply(Annotation annotation, string parentId)
+    {
+        annotation.InReplyTo = parentId;
+        // PDFium can't write /IRT, so the link rides in the reply's own /NM — see ReplyMarkup.
+        annotation.NativeId = ReplyMarkup.NewId(parentId);
+    }
+
+    /// <summary>
+    /// A note answering <paramref name="parent"/>, pinned in the right margin beside it and below
+    /// any replies it already has, so a thread reads top to bottom.
+    /// </summary>
+    private static TextNoteAnnotation BuildReplyNote(
+        MarkupEntry entry, Annotation parent, List<Annotation> pageAnnotations, IPdfService pdf, int pageIndex)
+    {
+        var (pageWidth, pageHeight) = pdf.GetPageSize(pageIndex);
+        var parentId = parent.NativeId!;
+        int earlierReplies = pageAnnotations.Count(a => ReplyMarkup.ParentOf(a) == parentId);
+        var y = MathF.Min(AnchorY(parent) + ReplyStep * (earlierReplies + 1), (float)pageHeight - ReplyStep);
+
+        var note = new TextNoteAnnotation
+        {
+            X = (float)pageWidth - NoteMarginInset,
+            Y = y,
+            Text = entry.Comment ?? "",
+            Color = entry.Color ?? DefaultColors[MarkupType.Note],
+            Author = entry.Author ?? "AI Reviewer",
+            Source = AnnotationSource.RailReader,
+        };
+        MarkAsReply(note, parentId);
+        return note;
+    }
+
+    /// <summary>The vertical position a margin note beside the annotation lines up with.</summary>
+    private static float AnchorY(Annotation annotation) => annotation switch
+    {
+        // The last line, where a note on a quote is pinned too.
+        TextMarkupAnnotation { Rects.Count: > 0 } m => m.Rects[^1].Y + m.Rects[^1].H / 2f,
+        TextNoteAnnotation n => n.Y,
+        RectAnnotation r => r.Y + r.H / 2f,
+        CaretAnnotation c => c.Y + c.H / 2f,
+        FreeTextAnnotation f => f.Y + f.H / 2f,
+        _ => HeadingIndex.SortY(annotation),
+    };
 
     /// <summary>
     /// The part of a markup that carries on over a page break. It is the same kind of markup as the

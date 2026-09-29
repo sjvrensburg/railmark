@@ -868,6 +868,151 @@ public class MarkupPlanServiceTests
         Assert.False(file.Pages.ContainsKey(1));
     }
 
+    // --- Replies ---
+
+    private static AnnotationFile WithParent(string id = "parent-1", int page = 0)
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[page] =
+        [
+            new HighlightAnnotation { NativeId = id, Author = "Human", Contents = "Is this right?", Rects = [new(50, 300, 100, 12)] },
+        ];
+        return existing;
+    }
+
+    private static (AnnotationFile file, MarkupPlanApplyResult result) Reply(
+        AnnotationFile existing, params MarkupEntry[] entries)
+        => MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [.. entries] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps.", [1] = "Second page." }),
+            existing);
+
+    [Fact]
+    public void Reply_Without_Quote_Is_A_Note_Beside_Its_Parent()
+    {
+        var (file, result) = Reply(WithParent(),
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "Yes — see Table 2." });
+
+        var entry = Assert.Single(result.Entries);
+        Assert.True(entry.Success, entry.Error);
+        Assert.Null(entry.Quote);
+        Assert.Equal("parent-1", entry.InReplyTo);
+        Assert.Equal("added", entry.Action);
+
+        var note = Assert.IsType<TextNoteAnnotation>(file.Pages[0][1]);
+        Assert.Equal("Yes — see Table 2.", note.Text);
+        Assert.Equal("parent-1", note.InReplyTo);
+        Assert.StartsWith("parent-1#reply-", note.NativeId);
+        Assert.Equal(600f - 24f, note.X);
+        // Parent's last line is centred at 306; the first reply sits one step below it.
+        Assert.Equal(326f, note.Y, precision: 3);
+    }
+
+    [Fact]
+    public void Successive_Replies_Stack_And_Are_All_Kept()
+    {
+        var (file, result) = Reply(WithParent(),
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "First." },
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "Second." });
+
+        Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
+        var notes = file.Pages[0].OfType<TextNoteAnnotation>().ToList();
+        Assert.Equal([326f, 346f], notes.Select(n => n.Y));
+    }
+
+    [Fact]
+    public void Reapplying_A_Reply_Finds_It_Through_Its_Id_Alone()
+    {
+        // As read back from a PDF: no /IRT (PDFium can't write it), just the /NM link.
+        var existing = WithParent();
+        existing.Pages[0].Add(new TextNoteAnnotation
+        {
+            NativeId = "parent-1#reply-abc", Contents = "Yes.", Author = "AI Reviewer", Color = "#FFFF00", X = 576, Y = 999,
+        });
+
+        var (file, result) = Reply(existing,
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "Yes." });
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Equal(2, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Reply_With_A_Quote_Marks_The_Text_And_Links_The_Parent()
+    {
+        var (file, result) = Reply(WithParent(),
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Quote = "brown fox", Type = MarkupType.Highlight, Comment = "This part." });
+
+        Assert.True(result.Entries[0].Success);
+        var highlight = file.Pages[0].OfType<HighlightAnnotation>().Last();
+        Assert.Equal("parent-1", highlight.InReplyTo);
+        Assert.StartsWith("parent-1#reply-", highlight.NativeId);
+    }
+
+    [Fact]
+    public void Reply_Fails_When_The_Parent_Is_Missing_Or_On_Another_Page()
+    {
+        var (_, missing) = Reply(WithParent(), new MarkupEntry { Page = 1, InReplyTo = "nope", Type = MarkupType.Note, Comment = "x" });
+        var (_, elsewhere) = Reply(WithParent(page: 1), new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "x" });
+
+        Assert.Contains("No annotation with id nope on page 1", missing.Entries[0].Error);
+        Assert.Contains("is on page 2, not page 1", elsewhere.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Reply_To_A_Parent_Removed_By_Replace_Author_Says_So()
+    {
+        var existing = WithParent();
+        existing.Pages[0][0].Author = "AI Reviewer";
+
+        var (_, result) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Comment = "x" }] },
+            new FakePdfService(1, (600, 800)), new FakePdfTextService([]), existing, replaceAuthor: "AI Reviewer");
+
+        Assert.Contains("--replace-author", result.Entries[0].Error);
+    }
+
+    [Theory]
+    [InlineData(null, MarkupType.Highlight, "quote is required")]
+    [InlineData("parent-1", MarkupType.Highlight, "must be a note")]
+    public void Entry_Without_Quote_Must_Be_A_Reply_Note(string? inReplyTo, MarkupType type, string error)
+    {
+        var (_, result) = Reply(WithParent(), new MarkupEntry { Page = 1, InReplyTo = inReplyTo, Type = type });
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains(error, result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Reply_Without_Quote_Rejects_Occurrence_And_Context()
+    {
+        var (_, result) = Reply(WithParent(), new MarkupEntry { Page = 1, InReplyTo = "parent-1", Type = MarkupType.Note, Occurrence = 2 });
+
+        Assert.Contains("need a quote", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void MarkupPlan_Deserializes_A_Reply_Without_Quote()
+    {
+        const string json = """{ "entries": [ { "page": 2, "type": "note", "inReplyTo": "abc", "comment": "Agreed." } ] }""";
+
+        var entry = JsonSerializer.Deserialize<MarkupPlan>(json, JsonOptions)!.Entries[0];
+
+        Assert.Null(entry.Quote);
+        Assert.Equal("abc", entry.InReplyTo);
+    }
+
+    [Theory]
+    [InlineData("irt", null, "irt")]
+    [InlineData("irt", "p#reply-x", "irt")]
+    [InlineData(null, "p#reply-x", "p")]
+    [InlineData(null, "p#reply-x#reply-y", "p#reply-x")]
+    [InlineData(null, "plain-id", null)]
+    [InlineData(null, null, null)]
+    public void ReplyMarkup_Prefers_IRT_Then_Reads_The_Id(string? inReplyTo, string? nativeId, string? expected)
+        => Assert.Equal(expected, ReplyMarkup.ParentOf(new TextNoteAnnotation { InReplyTo = inReplyTo, NativeId = nativeId }));
+
     [Fact]
     public void Resolve_Merges_Into_Existing_AnnotationFile()
     {

@@ -161,6 +161,20 @@ public class AnnotationJsonBuilderTests
     }
 
     [Fact]
+    public void Reply_Link_Is_Read_From_The_Id_When_There_Is_No_IRT()
+    {
+        var file = MakeFile(
+            (0, new HighlightAnnotation { NativeId = "p1", Rects = [new(10, 100, 50, 10)] }),
+            (0, new TextNoteAnnotation { NativeId = "p1#reply-abc", Y = 120, Contents = "Answer." }));
+
+        var records = new AnnotationJsonBuilder(file, "doc.pdf", []).BuildExport().Annotations;
+
+        Assert.Null(records[0].InReplyTo);
+        Assert.Equal("p1", records[1].InReplyTo);
+        Assert.Equal("p1#reply-abc", records[1].Id);
+    }
+
+    [Fact]
     public void Image_Paths_Use_Forward_Slashes()
     {
         var file = MakeFile((0, new RectAnnotation { X = 1, Y = 1, W = 10, H = 10 }));

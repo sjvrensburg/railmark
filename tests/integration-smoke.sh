@@ -383,6 +383,50 @@ jq '{entries: [.annotations[] | select(.author == "AI Reviewer") | {page, quote,
 "${RAILMARK[@]}" "${WORK}/span.pdf" --apply-markup "${WORK}/span-rt.json" --dry-run > "${WORK}/span-rt.out" 2>/dev/null
 jcheck "spanning records re-apply unchanged" "${WORK}/span-rt.out" 'length == 2 and all(.[]; .action == "unchanged")'
 
+# --- 10. Replies -----------------------------------------------------------------
+# PDFium can't write /IRT, so a reply's link to its parent rides in its /NM.
+# Only a real write + read shows the link survives.
+echo ""
+section "replies"
+cat > "${WORK}/human.json" <<'PLAN'
+{"entries":[{"page":1,"quote":"results were averaged","type":"highlight","comment":"Mean or median?","author":"Human"}]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/human.json" -o "${WORK}/human.pdf" > /dev/null 2>&1
+"${RAILMARK[@]}" "${WORK}/human.pdf" --format json -o - > "${WORK}/human.ann.json" 2>/dev/null
+parent_id=$(jq -r '.annotations[] | select(.author == "Human") | .id' "${WORK}/human.ann.json")
+if [ -n "$parent_id" ] && [ "$parent_id" != "null" ]; then
+    echo "  ok   human annotation has an id"
+else
+    echo "  FAIL human annotation has no id to reply to" >&2
+    failures=$((failures + 1))
+fi
+
+jq -n --arg id "$parent_id" '{entries: [
+  {page: 1, type: "note", inReplyTo: $id, comment: "The mean, per the methods."},
+  {page: 1, type: "note", inReplyTo: $id, comment: "Consider reporting both."}
+]}' > "${WORK}/reply.json"
+"${RAILMARK[@]}" "${WORK}/human.pdf" --apply-markup "${WORK}/reply.json" -o "${WORK}/replied.pdf" > "${WORK}/reply.out" 2>/dev/null
+jcheck "replies applied" "${WORK}/reply.out" 'length == 2 and all(.[]; .success and .action == "added" and .inReplyTo != null)'
+
+"${RAILMARK[@]}" "${WORK}/replied.pdf" --format json -o - > "${WORK}/replied.ann.json" 2>/dev/null
+jq -e --arg id "$parent_id" '[.annotations[] | select(.inReplyTo == $id and .type == "note")] | length == 2' \
+    "${WORK}/replied.ann.json" > /dev/null \
+    && echo "  ok   reply link survives the PDF" \
+    || { echo "  FAIL reply link lost in the PDF" >&2; failures=$((failures + 1)); }
+
+"${RAILMARK[@]}" "${WORK}/replied.pdf" -o "${WORK}/replied.md" > /dev/null 2>&1
+check "reply threaded under its parent" "${WORK}/replied.md" "> > **Reply — AI Reviewer:** The mean, per the methods."
+check "second reply threaded too"       "${WORK}/replied.md" "> > **Reply — AI Reviewer:** Consider reporting both."
+if awk '/Mean or median\?/{p=1} p && /The mean, per the methods/{found=1} END{exit !found}' "${WORK}/replied.md"; then
+    echo "  ok   replies follow their parent"
+else
+    echo "  FAIL replies do not follow their parent" >&2
+    failures=$((failures + 1))
+fi
+
+"${RAILMARK[@]}" "${WORK}/replied.pdf" --apply-markup "${WORK}/reply.json" --dry-run > "${WORK}/reply2.out" 2>/dev/null
+jcheck "re-applying replies is unchanged" "${WORK}/reply2.out" 'all(.[]; .action == "unchanged")'
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

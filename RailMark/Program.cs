@@ -295,13 +295,11 @@ if (markupPlanPath != null)
         + (dryRun ? " — dry run, nothing written." : "."));
     foreach (var failed in applyResult.Entries.Where(e => !e.Success))
     {
-        var quote = failed.Quote.Length > 60 ? failed.Quote[..60] + "…" : failed.Quote;
-        Console.Error.WriteLine($"  FAILED page {failed.Page}: \"{quote}\" — {failed.Error}");
+        Console.Error.WriteLine($"  FAILED page {failed.Page}: {Describe(failed)} — {failed.Error}");
     }
     foreach (var warned in applyResult.Entries.Where(e => e.Warning != null))
     {
-        var quote = warned.Quote.Length > 60 ? warned.Quote[..60] + "…" : warned.Quote;
-        Console.Error.WriteLine($"  WARNING page {warned.Page}: \"{quote}\" — {warned.Warning}");
+        Console.Error.WriteLine($"  WARNING page {warned.Page}: {Describe(warned)} — {warned.Warning}");
     }
 
     return applyResult.AllSucceeded ? 0 : 2;
@@ -479,6 +477,13 @@ WriteOutput(output);
 return 0;
 
 // --- Helpers ---
+
+static string Describe(MarkupEntryResult entry)
+{
+    if (string.IsNullOrEmpty(entry.Quote))
+        return entry.InReplyTo != null ? $"reply to {entry.InReplyTo}" : "(no quote)";
+    return "\"" + (entry.Quote.Length > 60 ? entry.Quote[..60] + "…" : entry.Quote) + "\"";
+}
 
 void WriteOutput(string content)
 {
