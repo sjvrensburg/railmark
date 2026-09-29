@@ -33,6 +33,7 @@ string? vlmApiKey = null;
 string? markupPlanPath = null;
 bool dryRun = false;
 bool inPlace = false;
+string? replaceAuthor = null;
 AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
 
 for (int i = 0; i < args.Length; i++)
@@ -74,6 +75,9 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--in-place":
             inPlace = true;
+            break;
+        case "--replace-author" when i + 1 < args.Length:
+            replaceAuthor = args[++i];
             break;
         case "--accelerator" when i + 1 < args.Length:
             var acceleratorArg = args[++i];
@@ -134,6 +138,12 @@ if (dryRun && markupPlanPath == null)
 if (inPlace && markupPlanPath == null)
 {
     Console.Error.WriteLine("Error: --in-place is only valid with --apply-markup.");
+    return 1;
+}
+
+if (replaceAuthor != null && markupPlanPath == null)
+{
+    Console.Error.WriteLine("Error: --replace-author is only valid with --apply-markup.");
     return 1;
 }
 
@@ -215,20 +225,11 @@ if (markupPlanPath != null)
     }
 
     var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(
-        plan, markupPdf, markupTextService, existing, includeContext: dryRun);
+        plan, markupPdf, markupTextService, existing, includeContext: dryRun, replaceAuthor: replaceAuthor);
 
-    var incomingAuthors = plan.Entries
-        .Select(e => e.Author ?? "AI Reviewer")
-        .ToHashSet();
-    bool authorCollision = existing?.Pages.Values
-        .SelectMany(a => a)
-        .Any(a => a.Author != null && incomingAuthors.Contains(a.Author)) ?? false;
-    if (authorCollision)
-    {
+    if (replaceAuthor != null)
         Console.Error.WriteLine(
-            "Warning: the target already contains annotations by an author used in this plan — " +
-            "this may be a repeat run duplicating earlier markup.");
-    }
+            $"{(dryRun ? "Would remove" : "Removed")} {applyResult.Removed} earlier annotation(s) by \"{replaceAuthor}\".");
 
     if (!dryRun)
     {
@@ -266,8 +267,14 @@ if (markupPlanPath != null)
     Console.Write(JsonSerializer.Serialize(applyResult.Entries, reportOptions));
 
     int succeeded = applyResult.Entries.Count(e => e.Success);
+    var actions = string.Join(", ", new[] { MarkupPlanService.ActionAdded, MarkupPlanService.ActionUnchanged, MarkupPlanService.ActionUpdated }
+        .Select(a => (a, n: applyResult.Entries.Count(e => e.Action == a)))
+        .Where(t => t.n > 0)
+        .Select(t => $"{t.n} {t.a}"));
     Console.Error.WriteLine(
-        $"Applied {succeeded}/{applyResult.Entries.Count} markup entries" + (dryRun ? " (dry run)." : "."));
+        $"Applied {succeeded}/{applyResult.Entries.Count} markup entries"
+        + (actions.Length > 0 ? $" ({actions})" : "")
+        + (dryRun ? " — dry run, nothing written." : "."));
     foreach (var failed in applyResult.Entries.Where(e => !e.Success))
     {
         var quote = failed.Quote.Length > 60 ? failed.Quote[..60] + "…" : failed.Quote;
@@ -658,6 +665,11 @@ static void PrintUsage()
                                is given. Reports per-entry results as JSON on stdout.
           --in-place           With --apply-markup, write annotations directly into the input
                                PDF instead of a copy. Cannot be combined with -o.
+          --replace-author <name>
+                               With --apply-markup, first remove every existing annotation
+                               by <name> — to revise an earlier round of markup rather than
+                               add to it. (Re-applying a plan never duplicates identical
+                               markup either way.)
           --dry-run            With --apply-markup, resolve and report only; do not write
           --version            Show the railmark version
           -h, --help           Show this help

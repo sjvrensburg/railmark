@@ -15,6 +15,14 @@ public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Su
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Warning { get; init; }
 
+    /// <summary>
+    /// What applying the entry did: <c>added</c> a new annotation, left an identical one
+    /// <c>unchanged</c>, or <c>updated</c> the comment/colour of one already covering the same
+    /// text. Null for a failed entry.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Action { get; init; }
+
     /// <summary>The text around the match with the match bracketed; populated on request (dry run).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Context { get; init; }
@@ -24,12 +32,27 @@ public sealed class MarkupPlanApplyResult
 {
     public List<MarkupEntryResult> Entries { get; } = [];
 
+    /// <summary>Annotations removed up front because their author was named for replacement.</summary>
+    public int Removed { get; set; }
+
     public bool AllSucceeded => Entries.All(e => e.Success);
 }
 
 public static class MarkupPlanService
 {
     private const float NoteMarginInset = 24f;
+
+    /// <summary>
+    /// How far apart, in points, two annotations' geometry may be and still count as covering the
+    /// same text. Geometry round-trips through the PDF's own coordinate space, so an annotation
+    /// read back is not bit-identical to the one written — but a different line of text is a full
+    /// line height away.
+    /// </summary>
+    private const float SameGeometryTolerance = 1.5f;
+
+    public const string ActionAdded = "added";
+    public const string ActionUnchanged = "unchanged";
+    public const string ActionUpdated = "updated";
 
     // Drawn from RailReader2's own five-colour palette, using the same per-tool default hue, so
     // AI-authored markup is indistinguishable in colour from markup a reader adds by hand — and
@@ -55,16 +78,27 @@ public static class MarkupPlanService
     /// corresponding Annotation objects, and merges them into an AnnotationFile (0-based
     /// Pages dict). Does not persist anything — the caller decides whether to Save.
     /// </summary>
+    /// <remarks>
+    /// Applying is idempotent: an entry whose annotation already exists — same type, author and
+    /// geometry — is not added a second time, so re-running a plan, or a plan that repeats an
+    /// entry, does not stack duplicates.
+    /// </remarks>
     /// <param name="includeContext">Report the text around each match (for dry runs).</param>
+    /// <param name="replaceAuthor">
+    /// Remove every existing annotation by this author before applying — for revising an earlier
+    /// round of markup rather than adding to it.
+    /// </param>
     public static (AnnotationFile file, MarkupPlanApplyResult result) Resolve(
         MarkupPlan plan,
         IPdfService pdf,
         IPdfTextService textService,
         AnnotationFile? existing = null,
         string? password = null,
-        bool includeContext = false)
+        bool includeContext = false,
+        string? replaceAuthor = null)
     {
         var file = existing ?? new AnnotationFile();
+        var removed = replaceAuthor is null ? 0 : RemoveByAuthor(file, replaceAuthor);
         var pages = new Dictionary<int, NormalizedText>();
         NormalizedText PageText(int pageIndex)
         {
@@ -142,17 +176,83 @@ public static class MarkupPlanService
             }
 
             var annotation = BuildAnnotation(entry, rects, pdf, placement.PageIndex);
-            if (!file.Pages.TryGetValue(placement.PageIndex, out var pageAnnotations))
-                file.Pages[placement.PageIndex] = pageAnnotations = [];
-            pageAnnotations.Add(annotation);
+            var action = Merge(file, placement.PageIndex, annotation);
 
-            results[index] = results[index]! with { SpanCount = rects.Count };
+            results[index] = results[index]! with { SpanCount = rects.Count, Action = action };
         }
 
-        var result = new MarkupPlanApplyResult();
+        var result = new MarkupPlanApplyResult { Removed = removed };
         result.Entries.AddRange(results!);
         return (file, result);
     }
+
+    /// <summary>
+    /// Removes every annotation by <paramref name="author"/>. Emptied pages keep their (now empty)
+    /// list rather than losing the key: the PDF writer only reconciles pages present in the file,
+    /// so a dropped key would leave the old annotations in the document.
+    /// </summary>
+    private static int RemoveByAuthor(AnnotationFile file, string author)
+    {
+        int removed = 0;
+        foreach (var annotations in file.Pages.Values)
+            removed += annotations.RemoveAll(a => string.Equals(a.Author, author, StringComparison.Ordinal));
+        return removed;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="annotation"/> to its page unless an annotation of the same kind, by the
+    /// same author, already covers the same text there. A match whose comment or colour differs is
+    /// brought up to date instead of being duplicated.
+    /// </summary>
+    private static string Merge(AnnotationFile file, int pageIndex, Annotation annotation)
+    {
+        if (!file.Pages.TryGetValue(pageIndex, out var pageAnnotations))
+            file.Pages[pageIndex] = pageAnnotations = [];
+
+        var twin = pageAnnotations.FirstOrDefault(a => IsSameMarkup(a, annotation));
+        if (twin is null)
+        {
+            pageAnnotations.Add(annotation);
+            return ActionAdded;
+        }
+
+        bool sameContents = NormalizeContents(twin.EffectiveContents) == NormalizeContents(annotation.EffectiveContents);
+        bool sameColor = string.Equals(twin.Color, annotation.Color, StringComparison.OrdinalIgnoreCase);
+        if (sameContents && sameColor)
+            return ActionUnchanged;
+
+        twin.Contents = annotation.EffectiveContents;
+        if (twin is TextNoteAnnotation note)
+            note.Text = annotation.EffectiveContents;
+        twin.Color = annotation.Color;
+        // The reader's faithful colour components would otherwise mask the new hex colour.
+        twin.ColorComponents = null;
+        return ActionUpdated;
+    }
+
+    private static bool IsSameMarkup(Annotation a, Annotation b)
+    {
+        if (a.GetType() != b.GetType()) return false;
+        if (!string.Equals(a.Author, b.Author, StringComparison.Ordinal)) return false;
+        // A suggested replacement and a plain deletion over the same words are different edits.
+        if (ReplacementMarkup.TryParse(a, out _, out _) != ReplacementMarkup.TryParse(b, out _, out _)) return false;
+
+        return (a, b) switch
+        {
+            (TextMarkupAnnotation ma, TextMarkupAnnotation mb) =>
+                ma.Rects.Count == mb.Rects.Count
+                && ma.Rects.Zip(mb.Rects).All(p =>
+                    Near(p.First.X, p.Second.X) && Near(p.First.Y, p.Second.Y)
+                    && Near(p.First.W, p.Second.W) && Near(p.First.H, p.Second.H)),
+            (TextNoteAnnotation na, TextNoteAnnotation nb) => Near(na.X, nb.X) && Near(na.Y, nb.Y),
+            _ => false,
+        };
+    }
+
+    private static bool Near(float a, float b) => MathF.Abs(a - b) <= SameGeometryTolerance;
+
+    // Viewers may rewrite line breaks when they save.
+    private static string NormalizeContents(string contents) => contents.Replace("\r\n", "\n").Replace('\r', '\n');
 
     private static MarkupEntryResult Failure(MarkupEntry entry, string error)
         => new(entry.Page, entry.Quote, entry.Type, false, error);

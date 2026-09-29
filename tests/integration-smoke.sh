@@ -266,6 +266,51 @@ check  "replacement labelled"      "${WORK}/replace.md" "suggested replacement"
 check  "plain strikeout unchanged" "${WORK}/replace.md" "~~No attempt~~"
 nocheck "tag not leaked"           "${WORK}/replace.md" "Replace with:"
 
+# --- 7. Re-applying a plan ----------------------------------------------------
+# Geometry read back from a PDF is not bit-identical to what was written, so
+# only a real round trip shows that re-applying a plan finds its own markup.
+echo ""
+section "idempotent apply"
+cat > "${WORK}/idem.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"interpretable in practice","type":"highlight","comment":"first round"},
+ {"page":1,"quote":"best available option","type":"underline"},
+ {"page":1,"quote":"results were averaged","type":"squiggly"},
+ {"page":1,"quote":"paragraph sits under","type":"strikeout"},
+ {"page":1,"quote":"Each sample was measured twice","type":"note","comment":"How many samples?"},
+ {"page":2,"quote":"small but consistent","type":"replace","replacement":"modest"}
+]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/idem.json" -o "${WORK}/idem1.pdf" > "${WORK}/idem1.out" 2>/dev/null
+jcheck "first apply adds everything" "${WORK}/idem1.out" 'all(.[]; .action == "added")'
+
+"${RAILMARK[@]}" "${WORK}/idem1.pdf" --apply-markup "${WORK}/idem.json" -o "${WORK}/idem2.pdf" > "${WORK}/idem2.out" 2>/dev/null
+jcheck "second apply finds every annotation" "${WORK}/idem2.out" 'all(.[]; .action == "unchanged")'
+"${RAILMARK[@]}" "${WORK}/idem2.pdf" -o "${WORK}/idem2.md" > /dev/null 2>&1
+check "no duplicates after re-apply" "${WORK}/idem2.md" "**10 annotations**"
+
+# Revising one comment updates that annotation instead of adding a second.
+sed 's/first round/second round/' "${WORK}/idem.json" > "${WORK}/idem-rev.json"
+"${RAILMARK[@]}" "${WORK}/idem2.pdf" --apply-markup "${WORK}/idem-rev.json" -o "${WORK}/idem3.pdf" > "${WORK}/idem3.out" 2>/dev/null
+jcheck "revised comment updated in place" "${WORK}/idem3.out" '.[0].action == "updated" and ([.[1:][] | .action] | all(. == "unchanged"))'
+"${RAILMARK[@]}" "${WORK}/idem3.pdf" -o "${WORK}/idem3.md" > /dev/null 2>&1
+check   "still no duplicates"    "${WORK}/idem3.md" "**10 annotations**"
+check   "new comment present"    "${WORK}/idem3.md" "**Comment:** second round"
+nocheck "old comment gone"       "${WORK}/idem3.md" "first round"
+
+# --replace-author clears an earlier round, leaving the fixture's own
+# annotations (author "fixture") alone.
+cat > "${WORK}/round2.json" <<'PLAN'
+{"entries":[{"page":2,"quote":"No attempt was made","type":"highlight","comment":"round two"}]}
+PLAN
+"${RAILMARK[@]}" "${WORK}/idem3.pdf" --apply-markup "${WORK}/round2.json" --replace-author "AI Reviewer" \
+    -o "${WORK}/round2.pdf" > /dev/null 2> "${WORK}/round2.err"
+check "removal reported" "${WORK}/round2.err" 'Removed 6 earlier annotation(s) by "AI Reviewer"'
+"${RAILMARK[@]}" "${WORK}/round2.pdf" -o "${WORK}/round2.md" > /dev/null 2>&1
+check   "only the new round and the fixture's own remain" "${WORK}/round2.md" "**5 annotations**"
+check   "new round present"  "${WORK}/round2.md" "round two"
+nocheck "old round gone"     "${WORK}/round2.md" "second round"
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

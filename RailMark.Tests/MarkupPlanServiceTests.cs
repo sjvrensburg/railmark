@@ -565,6 +565,152 @@ public class MarkupPlanServiceTests
         Assert.False(ReplacementMarkup.TryParse(new HighlightAnnotation { Subject = "Replacement", Contents = "Replace with: x" }, out _, out _));
     }
 
+    // --- Idempotent apply ---
+
+    private static (AnnotationFile file, MarkupPlanApplyResult result) Apply(
+        List<MarkupEntry> entries, AnnotationFile? existing = null, string? replaceAuthor = null)
+        => MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = entries },
+            new FakePdfService(pageCount: 1, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps over the lazy dog." }),
+            existing,
+            replaceAuthor: replaceAuthor);
+
+    private static List<MarkupEntry> MixedPlan() =>
+    [
+        new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Comment = "c1" },
+        new() { Page = 1, Quote = "lazy dog", Type = MarkupType.Note, Comment = "c2" },
+        new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" },
+        new() { Page = 1, Quote = "quick", Type = MarkupType.Underline },
+    ];
+
+    [Fact]
+    public void Resolve_Reports_Added_For_New_Annotations()
+    {
+        var (file, result) = Apply(MixedPlan());
+
+        Assert.All(result.Entries, e => Assert.Equal("added", e.Action));
+        Assert.Equal(4, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Resolve_Twice_Does_Not_Duplicate()
+    {
+        var (first, _) = Apply(MixedPlan());
+        var (second, result) = Apply(MixedPlan(), existing: first);
+
+        Assert.All(result.Entries, e => Assert.Equal("unchanged", e.Action));
+        Assert.All(result.Entries, e => Assert.True(e.Success));
+        Assert.Equal(4, second.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Resolve_Collapses_A_Repeated_Entry_Within_One_Plan()
+    {
+        var entry = new MarkupEntry { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight };
+        var (file, result) = Apply([entry, entry]);
+
+        Assert.Equal(["added", "unchanged"], result.Entries.Select(e => e.Action));
+        Assert.Single(file.Pages[0]);
+    }
+
+    [Fact]
+    public void Resolve_Updates_Comment_And_Colour_In_Place()
+    {
+        var (first, _) = Apply(MixedPlan());
+        var existingId = first.Pages[0][0];
+
+        var revised = MixedPlan();
+        revised[0] = revised[0] with { Comment = "revised", Color = "#0066FF" };
+        revised[1] = revised[1] with { Comment = "revised note" };
+        var (second, result) = Apply(revised, existing: first);
+
+        Assert.Equal(["updated", "updated", "unchanged", "unchanged"], result.Entries.Select(e => e.Action));
+        Assert.Equal(4, second.Pages[0].Count);
+        Assert.Same(existingId, second.Pages[0][0]);
+        Assert.Equal("revised", second.Pages[0][0].Contents);
+        Assert.Equal("#0066FF", second.Pages[0][0].Color);
+        Assert.Equal("revised note", second.Pages[0].OfType<TextNoteAnnotation>().Single().EffectiveContents);
+    }
+
+    [Fact]
+    public void Resolve_Treats_Different_Author_As_A_New_Annotation()
+    {
+        var (first, _) = Apply(MixedPlan());
+        var (second, result) = Apply([MixedPlan()[0] with { Author = "Second Reviewer" }], existing: first);
+
+        Assert.Equal("added", result.Entries[0].Action);
+        Assert.Equal(5, second.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Resolve_Keeps_Replacement_And_Deletion_Of_The_Same_Words_Apart()
+    {
+        var (file, result) = Apply(
+        [
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" },
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Strikeout },
+        ]);
+
+        Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
+        Assert.Equal(2, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Resolve_Treats_Existing_Annotation_Within_Tolerance_As_The_Same()
+    {
+        // "brown fox" starts at 10 → fake rect (10, 30, 9, 10). A copy read back from a PDF is off
+        // by a fraction of a point; one on another line is a full line away.
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { Author = "AI Reviewer", Color = "#FFFF00", Rects = [new(10.4f, 30.6f, 9.2f, 9.7f)] },
+        ];
+
+        var (file, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight }], existing);
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Single(file.Pages[0]);
+
+        existing.Pages[0][0] = new HighlightAnnotation { Author = "AI Reviewer", Color = "#FFFF00", Rects = [new(10f, 48f, 9f, 10f)] };
+        (file, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight }], existing);
+        Assert.Equal("added", result.Entries[0].Action);
+        Assert.Equal(2, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Resolve_Replace_Author_Removes_Only_That_Authors_Annotations()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { Author = "AI Reviewer", Contents = "old round" },
+            new HighlightAnnotation { Author = "Human", Contents = "keep me" },
+        ];
+        existing.Pages[3] = [new TextNoteAnnotation { Author = "AI Reviewer", Text = "old note" }];
+
+        var (file, result) = Apply(
+            [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Comment = "new round" }],
+            existing, replaceAuthor: "AI Reviewer");
+
+        Assert.Equal(2, result.Removed);
+        Assert.Equal(["keep me", "new round"], file.Pages[0].Select(a => a.Contents));
+        // The emptied page keeps its key, so the writer still visits it and deletes the old note.
+        Assert.True(file.Pages.ContainsKey(3));
+        Assert.Empty(file.Pages[3]);
+    }
+
+    [Fact]
+    public void Resolve_Replace_Author_Is_Case_Sensitive_And_Reports_Zero_When_Nothing_Matches()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] = [new HighlightAnnotation { Author = "AI Reviewer" }];
+
+        var (file, result) = Apply([], existing, replaceAuthor: "ai reviewer");
+
+        Assert.Equal(0, result.Removed);
+        Assert.Single(file.Pages[0]);
+    }
+
     [Fact]
     public void Resolve_Merges_Into_Existing_AnnotationFile()
     {
