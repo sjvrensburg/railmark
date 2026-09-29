@@ -24,7 +24,7 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 | `quote`   | string | yes      | Exact, verbatim, contiguous substring of the PDF's extracted text on that page. See "Quote rules" below. |
 | `type`    | string | yes      | One of: `highlight`, `underline`, `strikeout`, `squiggly`, `note` (case-insensitive). |
 | `comment` | string | no       | For `highlight`/`underline`/`strikeout`/`squiggly`, becomes the annotation's `Contents` (the popup comment). For `note`, becomes the note body text itself — a `note` entry with no comment produces an empty sticky note, which is rarely useful. `note` is placed as a margin sticky note pinned to the right edge of the page (24pt inset) at the vertical midpoint of the matched quote — it does **not** attach inline to the quoted text the way the other types do. |
-| `color`   | string | no       | Hex color (`#RRGGBB`). If omitted, a type-specific default is used: highlight `#FFFF00`, underline `#00AAFF`, strikeout `#FF0000`, squiggly `#FF8800`, note `#FFCC00`. |
+| `color`   | string | no       | Hex color (`#RRGGBB`). If omitted, a type-specific default from RailReader2's annotation palette is used: highlight `#FFFF00`, underline `#00A000`, strikeout `#FF0000`, squiggly `#00A000`, note `#FFFF00`. The full palette is yellow `#FFFF00`, green `#00A000`, red `#FF0000`, blue `#0066FF`, black `#000000` — prefer these when overriding, so the colours can be reproduced in RailReader2. |
 | `author`  | string | no       | Defaults to `"AI Reviewer"` if omitted. |
 
 ## Output
