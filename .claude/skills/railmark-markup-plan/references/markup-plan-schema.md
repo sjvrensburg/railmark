@@ -25,7 +25,7 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 | `quote`   | string | yes, except for a reply note | Exact, verbatim, contiguous substring of the PDF's extracted text on that page. See "Quote rules" below. May be omitted only by a `note` with `inReplyTo` — see "Replies". |
 | `type`    | string | yes      | One of: `highlight`, `underline`, `strikeout`, `squiggly`, `replace`, `note` (case-insensitive). |
 | `comment` | string | no       | For `highlight`/`underline`/`strikeout`/`squiggly`/`replace`, becomes the annotation's popup comment. For `note`, becomes the note body text itself — a `note` entry with no comment produces an empty sticky note, which is rarely useful. `note` is placed as a margin sticky note pinned to the right edge of the page (24pt inset) at the vertical midpoint of the quote's last line — it does **not** attach inline to the quoted text the way the other types do. |
-| `replacement` | string | for `replace` | The text that should replace the quote. Required (non-empty) for `replace`, and rejected on every other type. To suggest deleting text outright, use `strikeout`. |
+| `replacement` | string | for `replace` | The text that should replace the quote. Required (non-empty, and without a blank line in it) for `replace`, and rejected on every other type. To suggest deleting text outright, use `strikeout`. |
 | `occurrence` | int | no | When the quote occurs more than once on the page: which match to mark, 1-based in reading order (counted among the matches that also satisfy `contextBefore`/`contextAfter`, if given). See "Repeated quotes". |
 | `contextBefore` | string | no | Text that must immediately precede the quote, to pick one of several matches. |
 | `contextAfter`  | string | no | Text that must immediately follow the quote, to pick one of several matches. |
@@ -49,6 +49,14 @@ the same text — same type, same author, same geometry — and:
 - if only its `comment` or `color` differs, updates it in place (`"action": "updated"`);
 - otherwise adds a new one (`"action": "added"`).
 
+A `note` is the exception: every note on a line is pinned at the same margin spot, so a note is
+identified by its text as well as its position. A note whose text you changed is therefore
+**added** alongside the old one — use `--replace-author` (below) to drop the old round.
+
+Two entries in **one** plan that put different markup on the same text — the same highlight with
+two different comments, two different replacements for the same words — contradict each other.
+The first is applied; the second fails with `Conflicts with entry N of this plan`. Merge them.
+
 So re-running a whole plan after fixing a few failed quotes, or re-running a revised plan against
 the previous `-marked.pdf`, does not stack duplicates. Two entries by **different** authors on the
 same text are two annotations, deliberately.
@@ -69,7 +77,7 @@ The `quote` field is the only link between your editorial judgment and the PDF's
   - **wrap hyphens** — quoting `interpretable in practice` matches a PDF that breaks it as `inter-\npretable in practice`. The resulting markup correctly spans both lines.
 
   It is **not** tolerant of paraphrasing, reordering, or genuinely different punctuation (a comma you added, a dash you changed).
-- Must be **contiguous**. It may run over **one page break**: if the quote isn't found whole on `page`, RailMark tries splitting it so the first part ends `page` and the rest starts the next page — skipping a running footer/header of up to ~300 characters in between, and rejoining a word hyphenated over the break. The result reports `endPage`. For best results still keep quotes to one sentence or phrase rather than a whole paragraph (long quotes are more likely to hit a formatting difference somewhere in the middle).
+- Must be **contiguous**. It may run over **one page break**: if the quote isn't found whole on `page`, RailMark tries splitting it so the first part ends the last line of body text on `page` and the rest begins a line at the top of the next page — skipping a running footer/header of up to ~300 characters in between, and rejoining a word hyphenated over the break. Each part must be at least 3 characters. The result reports `endPage`. A quote that is simply on a neighbouring page is **not** split: it fails with `Quote not found on page N (it occurs on page M)`, which usually means `page` is off by one. For best results still keep quotes to one sentence or phrase rather than a whole paragraph (long quotes are more likely to hit a formatting difference somewhere in the middle).
 - Must come from **prose**, not the `--export` Markdown's own formatting — don't include `**bold**` markers, heading `#` characters, or table pipe characters as part of the quote; those are Markdown, not PDF text.
 - Type of markup that spans a single word (e.g. `underline` on a term) resolves most reliably. Long strikeouts across multiple sentences are more failure-prone.
 

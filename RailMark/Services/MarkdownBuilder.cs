@@ -175,6 +175,23 @@ public class MarkdownBuilder
             }
         }
 
+        // Malformed /IRT data can make replies point at each other (or a note at itself). A reply
+        // is only rendered beneath its parent, so in a cycle nothing would ever be rendered at
+        // all: leave any reply whose chain of parents loops as an ordinary note.
+        var parentOf = replies.ToDictionary(r => r.reply, r => r.parent);
+        bool Loops((int page, int annotIdx) start)
+        {
+            var seen = new HashSet<(int page, int annotIdx)> { start };
+            var current = start;
+            while (parentOf.TryGetValue(current, out var next))
+            {
+                if (!seen.Add(next)) return true;
+                current = next;
+            }
+            return false;
+        }
+        replies.RemoveAll(r => Loops(r.reply));
+
         foreach (var (reply, parent) in replies
                      .OrderBy(r => r.reply.page)
                      .ThenBy(r => HeadingIndex.SortY(_annotations.Pages[r.reply.page][r.reply.annotIdx])))

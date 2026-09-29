@@ -21,14 +21,31 @@ internal static class ReplyMarkup
 
     /// <summary>
     /// The /NM of the annotation this one replies to, or null. A reply to a reply carries its
-    /// whole ancestry in its id, so the parent is everything before the last marker.
+    /// whole ancestry in its id, so the parent is everything before the last marker — provided
+    /// that marker begins the id's final segment.
     /// </summary>
     public static string? ParentOf(Annotation annotation)
     {
         if (!string.IsNullOrEmpty(annotation.InReplyTo)) return annotation.InReplyTo;
-        if (annotation.NativeId is not { } id) return null;
+        return IdSuffix.Prefix(annotation.NativeId, Marker);
+    }
+}
 
-        var marker = id.LastIndexOf(Marker, StringComparison.Ordinal);
-        return marker > 0 ? id[..marker] : null;
+/// <summary>
+/// Reads the ids RailMark composes as <c>&lt;base&gt;&lt;marker&gt;&lt;fresh id&gt;</c>.
+/// </summary>
+internal static class IdSuffix
+{
+    /// <summary>
+    /// The base of <paramref name="id"/> when its <b>last</b> segment was added with
+    /// <paramref name="marker"/>, else null — so the continuation of a reply
+    /// (<c>p#reply-x#cont-y</c>) is not itself read as a reply to <c>p</c>.
+    /// </summary>
+    public static string? Prefix(string? id, string marker)
+    {
+        if (id is null) return null;
+        var at = id.LastIndexOf(marker, StringComparison.Ordinal);
+        if (at <= 0) return null;
+        return id.IndexOf('#', at + marker.Length) >= 0 ? null : id[..at];
     }
 }

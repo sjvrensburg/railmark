@@ -146,6 +146,18 @@ public class AnnotationJsonBuilderTests
     }
 
     [Fact]
+    public void Continuation_Pairs_By_Its_Id_Link_Over_Position()
+    {
+        // A lower highlight on the page (a footnote, the other column) must not steal the tail.
+        var file = MakeFile(
+            (0, new HighlightAnnotation { NativeId = "head", Author = "AI", Rects = [new(300, 600, 50, 10)] }),
+            (0, new HighlightAnnotation { NativeId = "footnote", Author = "AI", Rects = [new(10, 750, 50, 10)] }),
+            (1, new HighlightAnnotation { NativeId = "head#cont-1", Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }));
+
+        Assert.Equal((0, 0), Assert.Single(ContinuationMarkup.Pair(file)).Key);
+    }
+
+    [Fact]
     public void Continuation_Pairs_Only_With_Same_Kind_And_Author()
     {
         var file = MakeFile(

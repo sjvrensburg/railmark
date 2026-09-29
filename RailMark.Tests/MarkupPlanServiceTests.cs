@@ -643,15 +643,86 @@ public class MarkupPlanServiceTests
 
         var revised = MixedPlan();
         revised[0] = revised[0] with { Comment = "revised", Color = "#0066FF" };
-        revised[1] = revised[1] with { Comment = "revised note" };
         var (second, result) = Apply(revised, existing: first);
 
-        Assert.Equal(["updated", "updated", "unchanged", "unchanged"], result.Entries.Select(e => e.Action));
+        Assert.Equal(["updated", "unchanged", "unchanged", "unchanged"], result.Entries.Select(e => e.Action));
         Assert.Equal(4, second.Pages[0].Count);
         Assert.Same(existingId, second.Pages[0][0]);
         Assert.Equal("revised", second.Pages[0][0].Contents);
         Assert.Equal("#0066FF", second.Pages[0][0].Color);
-        Assert.Equal("revised note", second.Pages[0].OfType<TextNoteAnnotation>().Single().EffectiveContents);
+    }
+
+    [Fact]
+    public void A_Note_Is_Identified_By_Its_Text_So_New_Text_Is_A_New_Note()
+    {
+        // Every note on a line sits at the same margin spot; position can't tell them apart.
+        var (first, _) = Apply(MixedPlan());
+        var revised = MixedPlan();
+        revised[1] = revised[1] with { Comment = "a different point" };
+
+        var (second, result) = Apply(revised, existing: first);
+
+        Assert.Equal("added", result.Entries[1].Action);
+        Assert.Equal(["c2", "a different point"], second.Pages[0].OfType<TextNoteAnnotation>().Select(n => n.EffectiveContents));
+    }
+
+    [Fact]
+    public void Two_Notes_On_One_Line_Are_Both_Kept()
+    {
+        // Reviewer repro: "quick" and "lazy dog" resolve to the same fake line, so both notes land
+        // on the same margin spot. Neither may overwrite the other.
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "ab" });
+        var (file, result) = MarkupPlanService.Resolve(
+            new MarkupPlan
+            {
+                Entries =
+                [
+                    new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "First issue." },
+                    new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "Second issue." },
+                ],
+            },
+            new FakePdfService(1, (600, 800)), text);
+
+        Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
+        Assert.Equal(["First issue.", "Second issue."], file.Pages[0].Select(a => a.EffectiveContents));
+    }
+
+    [Fact]
+    public void Two_Entries_Marking_The_Same_Text_Differently_Conflict()
+    {
+        var (file, result) = Apply(
+        [
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Comment = "one" },
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Comment = "two" },
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" },
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "hops" },
+        ]);
+
+        Assert.Equal([true, false, true, false], result.Entries.Select(e => e.Success));
+        Assert.Contains("Conflicts with entry 1", result.Entries[1].Error);
+        Assert.Contains("Conflicts with entry 3", result.Entries[3].Error);
+        Assert.Equal(["one", "Replace with: leaps"], file.Pages[0].Select(a => a.Contents));
+    }
+
+    [Fact]
+    public void Markup_Replies_To_One_Parent_On_Different_Text_Are_Both_Kept()
+    {
+        var (file, result) = Reply(WithParent(),
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Quote = "quick", Type = MarkupType.Highlight },
+            new MarkupEntry { Page = 1, InReplyTo = "parent-1", Quote = "jumps", Type = MarkupType.Highlight });
+
+        Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
+        Assert.Equal(3, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Replacement_With_A_Blank_Line_Is_Rejected()
+    {
+        var (_, result) = ResolveOne(
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "keep\n\nthe" },
+            "The quick brown fox jumps.");
+
+        Assert.Contains("blank line", result.Entries[0].Error);
     }
 
     [Fact]
@@ -779,6 +850,37 @@ public class MarkupPlanServiceTests
             NormalizedText.From(farFromEnd), NormalizedText.From(Page2), "repeated the whole measurement"));
         Assert.Null(TextLocator.FindAcrossPageBreak(
             NormalizedText.From(Page1), NormalizedText.From(new string('y', 400) + " measurement with"), "the whole measurement with"));
+    }
+
+    [Theory]
+    // Reviewer repros: quotes with the wrong page number, or misquoted, "resolved" as a stray
+    // letter or word near the end of one page plus the rest at the top of the next.
+    [InlineData("the second heading on the same page.", "Results\nNo attempt was made to preserve", "No attempt was made")]
+    [InlineData("every run of the experiment.\nA second run of the experiment repeated the whole\nPage 2",
+                "measurement with a fresh batch of samples, and it agreed.", "measurement with a fresh batch")]
+    [InlineData("A second run of the experiment repeated the whole\nPage 2",
+                "measurement with a fresh batch of samples, and it agreed.", "the samples, and it agreed")]
+    public void FindAcrossPageBreak_Rejects_Splits_That_Do_Not_Fall_At_A_Line_Break(string page1, string page2, string quote)
+        => Assert.Null(TextLocator.FindAcrossPageBreak(NormalizedText.From(page1), NormalizedText.From(page2), quote));
+
+    [Fact]
+    public void Resolve_Names_The_Neighbouring_Page_When_A_Quote_Is_There()
+    {
+        var (_, result) = ResolveTwoPages(new() { Page = 1, Quote = "a fresh batch of samples", Type = MarkupType.Highlight });
+
+        Assert.Equal("Quote not found on page 1 (it occurs on page 2).", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Spanning_Markup_Links_Its_Halves_Through_Their_Ids()
+    {
+        var (file, _) = ResolveTwoPages(new() { Page = 1, Quote = "the whole measurement with", Type = MarkupType.Highlight });
+
+        var head = file.Pages[0].Single();
+        var tail = file.Pages[1].Single();
+        Assert.NotNull(head.NativeId);
+        Assert.Equal(head.NativeId, ContinuationMarkup.HeadOf(tail));
+        Assert.Null(ReplyMarkup.ParentOf(tail));
     }
 
     [Fact]
@@ -1030,6 +1132,7 @@ public class MarkupPlanServiceTests
     [InlineData(null, "p#reply-x", "p")]
     [InlineData(null, "p#reply-x#reply-y", "p#reply-x")]
     [InlineData(null, "plain-id", null)]
+    [InlineData(null, "p#reply-x#cont-y", null)]
     [InlineData(null, null, null)]
     public void ReplyMarkup_Prefers_IRT_Then_Reads_The_Id(string? inReplyTo, string? nativeId, string? expected)
         => Assert.Equal(expected, ReplyMarkup.ParentOf(new TextNoteAnnotation { InReplyTo = inReplyTo, NativeId = nativeId }));

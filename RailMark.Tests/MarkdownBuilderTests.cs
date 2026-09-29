@@ -172,6 +172,26 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Reply_Cycles_Are_Rendered_As_Plain_Notes_Not_Dropped()
+    {
+        var file = MakeFile(
+        [
+            (0,
+            [
+                new TextNoteAnnotation { NativeId = "a", InReplyTo = "b", Y = 10, Contents = "Note A." },
+                new TextNoteAnnotation { NativeId = "b", InReplyTo = "a", Y = 20, Contents = "Note B." },
+                new TextNoteAnnotation { NativeId = "self", InReplyTo = "self", Y = 30, Contents = "Note C." },
+            ]),
+        ]);
+
+        var md = Build(file, [H("Chapter 1", 0)]).Build();
+
+        Assert.Contains("> **Note:** Note A.", md);
+        Assert.Contains("> **Note:** Note B.", md);
+        Assert.Contains("> **Note:** Note C.", md);
+    }
+
+    [Fact]
     public void Highlight_Without_Page_Text_Shows_Bold_Highlight()
     {
         var file = MakeFile([(0, [new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] }])]);

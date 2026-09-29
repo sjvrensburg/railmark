@@ -219,7 +219,8 @@ one per sentence. Marking everything is as unhelpful to the reader as marking no
 
 1. Re-read the exact text of that page (don't trust your first reading of it).
 2. Correct the quote to match verbatim — or, for an `occurrence`/context error, fix the choice of
-   match.
+   match. An error ending `(it occurs on page M)` means the `page` number is wrong. A
+   `Conflicts with entry N` error means two entries mark the same text differently: merge them.
 3. Re-run the whole corrected plan. Applying is idempotent: already-applied entries come back
    `"action": "unchanged"`, and an entry whose comment you changed comes back `"updated"`.
 

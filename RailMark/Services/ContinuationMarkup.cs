@@ -8,18 +8,31 @@ namespace RailMark.Services;
 /// with a /Subj of <see cref="Subject"/> so it reads as the tail of the first rather than as a
 /// separate, uncommented edit.
 /// </summary>
+/// <remarks>
+/// The two halves are linked through /NM, the same way replies are (see <see cref="ReplyMarkup"/>):
+/// the continuation's id is the head's, then <see cref="Marker"/>, then a fresh id. Pairing by
+/// position is only a fallback for a continuation that carries no such link.
+/// </remarks>
 internal static class ContinuationMarkup
 {
     public const string Subject = "Continuation";
+    public const string Marker = "#cont-";
+
+    /// <summary>A fresh /NM for the continuation of the markup whose /NM is <paramref name="headId"/>.</summary>
+    public static string NewId(string headId) => $"{headId}{Marker}{Guid.NewGuid():N}";
+
+    /// <summary>The /NM of the markup this continuation continues, when its own /NM records it.</summary>
+    public static string? HeadOf(Annotation annotation) => IdSuffix.Prefix(annotation.NativeId, Marker);
 
     public static bool Is(Annotation annotation)
         => annotation is TextMarkupAnnotation && annotation.Subject == Subject;
 
     /// <summary>
-    /// Pairs each continuation with the markup it continues: on the previous page, the same kind
-    /// of markup (a replacement's tail is a plain strikeout), by the same author — and of those,
-    /// the lowest on the page, since a quote runs over the break from the bottom. Keyed by the
-    /// head's (page, index); the value is the continuation's.
+    /// Pairs each continuation with the markup it continues on the previous page — by the link in
+    /// its /NM when it has one. Otherwise, the same kind of markup (a replacement's tail is a plain
+    /// strikeout) by the same author, and of those the lowest on the page, since a quote runs over
+    /// the break from the bottom. Keyed by the head's (page, index); the value is the
+    /// continuation's.
     /// </summary>
     public static Dictionary<(int page, int annotIdx), (int page, int annotIdx)> Pair(AnnotationFile file)
     {
@@ -32,6 +45,16 @@ internal static class ContinuationMarkup
             {
                 if (!Is(annotations[i])) continue;
                 var tail = annotations[i];
+
+                if (HeadOf(tail) is { } headId)
+                {
+                    var linked = previous.FindIndex(a => a.NativeId == headId);
+                    if (linked >= 0 && !pairs.ContainsKey((page - 1, linked)))
+                    {
+                        pairs[(page - 1, linked)] = (page, i);
+                        continue;
+                    }
+                }
 
                 var head = previous
                     .Select((a, idx) => (a, idx))

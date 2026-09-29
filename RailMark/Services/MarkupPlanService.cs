@@ -214,7 +214,19 @@ public static class MarkupPlanService
                 }
             }
 
+            // The commonest cause of a missing quote is a page number off by one: say so.
+            if (failure.MatchCount == 0 && FoundOnNeighbour(entry.Quote!, pageIndex) is { } neighbour)
+                failure = failure with { Error = $"Quote not found on page {entry.Page} (it occurs on page {neighbour + 1})." };
             results[index] = failure;
+        }
+
+        int? FoundOnNeighbour(string quote, int pageIndex)
+        {
+            foreach (var candidate in new[] { pageIndex + 1, pageIndex - 1 })
+                if (candidate >= 0 && candidate < pdf.PageCount
+                    && TextLocator.FindQuoteMatches(PageText(candidate), quote).Count > 0)
+                    return candidate;
+            return null;
         }
 
         // Pass 2 — fetch geometry in a single batched GetTextRangeRects call per page instead of
@@ -237,7 +249,9 @@ public static class MarkupPlanService
                 geometry[onPage[k].index][onPage[k].part] = MergeLineRects(k < rectLines.Count ? rectLines[k] : []);
         }
 
-        // Pass 3 — build and merge annotations, in plan order.
+        // Pass 3 — build and merge annotations, in plan order. `touched` records which entry put
+        // each annotation in place during this run, to catch two entries contradicting each other.
+        var touched = new Dictionary<Annotation, int>(ReferenceEqualityComparer.Instance);
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
@@ -245,7 +259,10 @@ public static class MarkupPlanService
             {
                 var pageIndex = entry.Page - 1;
                 var note = BuildReplyNote(entry, anchor, file.Pages[pageIndex], pdf, pageIndex);
-                results[index] = results[index]! with { Action = Merge(file, pageIndex, note) };
+                var outcome = Merge(file, pageIndex, note, index, touched);
+                results[index] = outcome.ConflictsWith is { } other
+                    ? ConflictFailure(results[index]!, other)
+                    : results[index]! with { Action = outcome.Action };
                 continue;
             }
 
@@ -261,15 +278,42 @@ public static class MarkupPlanService
             // every part, with the comment carried by the first alone so it isn't repeated.
             var actions = new List<string>();
             int partsToBuild = entry.Type == MarkupType.Note ? 1 : entryPlacements.Count;
-            for (int part = 0; part < partsToBuild; part++)
+            string? headId = null;
+            int? conflict = null;
+            for (int part = 0; part < partsToBuild && conflict is null; part++)
             {
                 var pageIndex = entryPlacements[part].PageIndex;
-                var annotation = part == 0
-                    ? BuildAnnotation(entry, geometry[index][part], pdf, pageIndex)
-                    : BuildContinuation(entry, geometry[index][part]);
-                if (part == 0 && entry.InReplyTo is { } parentId)
-                    MarkAsReply(annotation, parentId);
-                actions.Add(Merge(file, pageIndex, annotation));
+                Annotation annotation;
+                if (part == 0)
+                {
+                    annotation = BuildAnnotation(entry, geometry[index][part], pdf, pageIndex);
+                    if (entry.InReplyTo is { } parentId)
+                        MarkAsReply(annotation, parentId);
+                    // A split markup's halves are linked through /NM, so the head needs its id
+                    // before it is written rather than the one the PDF writer would mint.
+                    if (partsToBuild > 1)
+                        annotation.NativeId ??= Guid.NewGuid().ToString();
+                }
+                else
+                {
+                    annotation = BuildContinuation(entry, geometry[index][part], headId);
+                }
+
+                var outcome = Merge(file, pageIndex, annotation, index, touched);
+                if (outcome.ConflictsWith is { } other)
+                {
+                    conflict = other;
+                    break;
+                }
+                if (part == 0)
+                    headId = outcome.Stored!.NativeId;
+                actions.Add(outcome.Action!);
+            }
+
+            if (conflict is { } conflicting)
+            {
+                results[index] = ConflictFailure(results[index]!, conflicting);
+                continue;
             }
 
             results[index] = results[index]! with
@@ -299,12 +343,21 @@ public static class MarkupPlanService
         return removed;
     }
 
+    /// <summary>What <see cref="Merge"/> did with an annotation.</summary>
+    /// <param name="Stored">The annotation now on the page — the new one, or the twin it matched.</param>
+    /// <param name="ConflictsWith">Set instead of an action: the plan index of an earlier entry
+    /// that already put different markup on the same text in this run.</param>
+    private readonly record struct MergeOutcome(string? Action, Annotation? Stored, int? ConflictsWith = null);
+
     /// <summary>
     /// Adds <paramref name="annotation"/> to its page unless an annotation of the same kind, by the
     /// same author, already covers the same text there. A match whose comment or colour differs is
-    /// brought up to date instead of being duplicated.
+    /// brought up to date instead of being duplicated — unless an earlier entry of this same plan
+    /// put it there, in which case the two entries contradict each other and the later one is
+    /// refused rather than silently overwriting the first.
     /// </summary>
-    private static string Merge(AnnotationFile file, int pageIndex, Annotation annotation)
+    private static MergeOutcome Merge(
+        AnnotationFile file, int pageIndex, Annotation annotation, int entryIndex, Dictionary<Annotation, int> touched)
     {
         if (!file.Pages.TryGetValue(pageIndex, out var pageAnnotations))
             file.Pages[pageIndex] = pageAnnotations = [];
@@ -313,13 +366,17 @@ public static class MarkupPlanService
         if (twin is null)
         {
             pageAnnotations.Add(annotation);
-            return ActionAdded;
+            touched[annotation] = entryIndex;
+            return new MergeOutcome(ActionAdded, annotation);
         }
 
         bool sameContents = NormalizeContents(twin.EffectiveContents) == NormalizeContents(annotation.EffectiveContents);
         bool sameColor = string.Equals(twin.Color, annotation.Color, StringComparison.OrdinalIgnoreCase);
         if (sameContents && sameColor)
-            return ActionUnchanged;
+            return new MergeOutcome(ActionUnchanged, twin);
+
+        if (touched.TryGetValue(twin, out var earlier) && earlier != entryIndex)
+            return new MergeOutcome(null, null, ConflictsWith: earlier);
 
         twin.Contents = annotation.EffectiveContents;
         if (twin is TextNoteAnnotation note)
@@ -327,7 +384,8 @@ public static class MarkupPlanService
         twin.Color = annotation.Color;
         // The reader's faithful colour components would otherwise mask the new hex colour.
         twin.ColorComponents = null;
-        return ActionUpdated;
+        touched[twin] = entryIndex;
+        return new MergeOutcome(ActionUpdated, twin);
     }
 
     private static bool IsSameMarkup(Annotation a, Annotation b)
@@ -335,14 +393,16 @@ public static class MarkupPlanService
         if (a.GetType() != b.GetType()) return false;
         if (!string.Equals(a.Author, b.Author, StringComparison.Ordinal)) return false;
 
-        // A reply is identified by what it answers and what it says, not where it sits: one
-        // parent can collect several replies from the same author, and where each is pinned
-        // depends on how many came before it.
+        bool sameText = NormalizeContents(a.EffectiveContents) == NormalizeContents(b.EffectiveContents);
+
+        // A reply answers a particular annotation; replies to different ones are never the same.
+        // A reply *note* is identified by what it says, not where it sits: one parent can collect
+        // several replies from the same author, and where each is pinned depends on how many
+        // came before it. A reply that marks text is still identified by the text it marks.
         var parentA = ReplyMarkup.ParentOf(a);
         var parentB = ReplyMarkup.ParentOf(b);
-        if (parentA != null || parentB != null)
-            return parentA == parentB
-                && NormalizeContents(a.EffectiveContents) == NormalizeContents(b.EffectiveContents);
+        if (parentA != parentB) return false;
+        if (parentA != null && a is TextNoteAnnotation) return sameText;
 
         // A suggested replacement and a plain deletion over the same words are different edits,
         // and so are a markup and the continuation of one that started on the previous page.
@@ -356,7 +416,9 @@ public static class MarkupPlanService
                 && ma.Rects.Zip(mb.Rects).All(p =>
                     Near(p.First.X, p.Second.X) && Near(p.First.Y, p.Second.Y)
                     && Near(p.First.W, p.Second.W) && Near(p.First.H, p.Second.H)),
-            (TextNoteAnnotation na, TextNoteAnnotation nb) => Near(na.X, nb.X) && Near(na.Y, nb.Y),
+            // Every note on a line is pinned at the same margin spot, so position alone can't tell
+            // two notes apart: what they say is part of which note they are.
+            (TextNoteAnnotation na, TextNoteAnnotation nb) => sameText && Near(na.X, nb.X) && Near(na.Y, nb.Y),
             _ => false,
         };
     }
@@ -365,6 +427,15 @@ public static class MarkupPlanService
 
     // Viewers may rewrite line breaks when they save.
     private static string NormalizeContents(string contents) => contents.Replace("\r\n", "\n").Replace('\r', '\n');
+
+    private static MarkupEntryResult ConflictFailure(MarkupEntryResult located, int otherIndex)
+        => located with
+        {
+            Success = false,
+            Warning = null,
+            Error = $"Conflicts with entry {otherIndex + 1} of this plan, which marks the same text "
+                    + "with a different comment or colour. Merge them into one entry.",
+        };
 
     private static MarkupEntryResult Failure(MarkupEntry entry, string error)
         => new(entry.Page, entry.Quote, entry.Type, false, error);
@@ -427,6 +498,8 @@ public static class MarkupPlanService
 
         if (entry.Type == MarkupType.Replace && string.IsNullOrEmpty(entry.Replacement))
             return "A replace entry needs a non-empty replacement (use strikeout to suggest a deletion).";
+        if (entry.Replacement != null && entry.Replacement.Replace("\r\n", "\n").Contains("\n\n"))
+            return "replacement must not contain a blank line (it separates the replacement from the comment when read back).";
         if (entry.Type != MarkupType.Replace && entry.Replacement != null)
             return $"replacement is only valid with type replace (this entry is {entry.Type.ToString().ToLowerInvariant()}).";
         return null;
@@ -518,11 +591,13 @@ public static class MarkupPlanService
     /// first part, tagged as a continuation and without the comment (or replacement), which the
     /// first part carries — a strikeout here is the tail of the edit, not a deletion of its own.
     /// </summary>
-    private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects)
+    private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects, string? headId)
     {
         var type = entry.Type == MarkupType.Replace ? MarkupType.Strikeout : entry.Type;
         var annotation = BuildTextMarkup(type, rects);
         annotation.Subject = ContinuationMarkup.Subject;
+        if (headId != null)
+            annotation.NativeId = ContinuationMarkup.NewId(headId);
         annotation.Color = entry.Color ?? DefaultColors[entry.Type];
         annotation.Author = entry.Author ?? "AI Reviewer";
         annotation.Source = AnnotationSource.RailReader;

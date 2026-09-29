@@ -383,6 +383,35 @@ jq '{entries: [.annotations[] | select(.author == "AI Reviewer") | {page, quote,
 "${RAILMARK[@]}" "${WORK}/span.pdf" --apply-markup "${WORK}/span-rt.json" --dry-run > "${WORK}/span-rt.out" 2>/dev/null
 jcheck "spanning records re-apply unchanged" "${WORK}/span-rt.out" 'length == 2 and all(.[]; .action == "unchanged")'
 
+# A quote with the wrong page number, or misquoted, must fail — not "resolve"
+# as a stray letter at the end of one page plus the rest at the top of the next.
+cat > "${WORK}/nospan.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"No attempt was made","type":"underline"},
+ {"page":2,"quote":"measurement with a fresh batch","type":"highlight"},
+ {"page":2,"quote":"the samples, and it agreed","type":"highlight"}
+]}
+PLAN
+set +e
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/nospan.json" --dry-run > "${WORK}/nospan.out" 2>/dev/null
+set -e
+jcheck "wrong-page and misquoted quotes fail" "${WORK}/nospan.out" 'all(.[]; .success | not)'
+jcheck "wrong page named"                     "${WORK}/nospan.out" '.[0].error == "Quote not found on page 1 (it occurs on page 2)." and (.[1].error | contains("occurs on page 3"))'
+
+# Two notes on different phrases of one line share a margin spot; both must survive.
+cat > "${WORK}/twonotes.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"RailMark test suite","type":"note","comment":"First issue."},
+ {"page":1,"quote":"PDF whose exact","type":"note","comment":"Second issue."}
+]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/twonotes.json" -o "${WORK}/twonotes.pdf" > "${WORK}/twonotes.out" 2>/dev/null
+jcheck "both notes added" "${WORK}/twonotes.out" 'all(.[]; .action == "added")'
+"${RAILMARK[@]}" "${WORK}/twonotes.pdf" --format json -o - > "${WORK}/twonotes.ann.json" 2>/dev/null
+jcheck "both notes in the PDF" "${WORK}/twonotes.ann.json" '[.annotations[] | select(.type == "note") | .comment] | sort == ["First issue.", "Second issue."]'
+"${RAILMARK[@]}" "${WORK}/twonotes.pdf" --apply-markup "${WORK}/twonotes.json" --dry-run > "${WORK}/twonotes2.out" 2>/dev/null
+jcheck "both notes found on re-apply" "${WORK}/twonotes2.out" 'all(.[]; .action == "unchanged")'
+
 # --- 10. Replies -----------------------------------------------------------------
 # PDFium can't write /IRT, so a reply's link to its parent rides in its /NM.
 # Only a real write + read shows the link survives.
