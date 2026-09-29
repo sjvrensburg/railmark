@@ -26,6 +26,8 @@ public class MarkdownBuilder
     private readonly Dictionary<CaretAnnotation, (int page, int annotIdx)> _caretReplacements = [];
     // (page, annotIdx) of annotations rendered as part of another annotation, not on their own.
     private readonly HashSet<(int page, int annotIdx)> _groupChildren = [];
+    // Markup split over a page break: head (page, annotIdx) → its continuation on the next page.
+    private Dictionary<(int page, int annotIdx), (int page, int annotIdx)> _continuations = [];
 
     public MarkdownBuilder(
         AnnotationFile annotations,
@@ -59,6 +61,9 @@ public class MarkdownBuilder
         var headingOrder = headings.Order;
 
         BuildCaretReplacements();
+        _continuations = ContinuationMarkup.Pair(_annotations);
+        foreach (var tail in _continuations.Values)
+            _groupChildren.Add(tail);
 
         // Group annotations by heading
         var grouped = new Dictionary<string, List<(int page, int annotIdx, Annotation annotation)>>();
@@ -227,7 +232,19 @@ public class MarkdownBuilder
     }
 
     private string GetMarkupText(int page, int annotIdx)
-        => CleanText(_highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var t) ? t : "");
+    {
+        var text = CleanText(_highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var t) ? t : "");
+        // A markup that runs over a page break reads as one, with its continuation's text.
+        if (_continuations.TryGetValue((page, annotIdx), out var tail))
+            text = ContinuationMarkup.JoinText(text, GetMarkupText(tail.page, tail.annotIdx));
+        return text;
+    }
+
+    /// <summary>"p. 3" — or "pp. 3–4" for a markup that runs over a page break.</summary>
+    private string PageSpan(int page, int annotIdx)
+        => _continuations.TryGetValue((page, annotIdx), out var tail)
+            ? $"pp. {page + 1}–{tail.page + 1}"
+            : $"p. {page + 1}";
 
     /// <summary>
     /// Some readers (Skim, notably) pre-fill an annotation's /Contents with a copy of the text it
@@ -244,7 +261,8 @@ public class MarkdownBuilder
 
         if (!string.IsNullOrWhiteSpace(highlightedText))
         {
-            var pageText = _pageTexts?.GetValueOrDefault(page);
+            // A highlight continued on the next page doesn't sit within one page's text.
+            var pageText = _continuations.ContainsKey((page, annotIdx)) ? null : _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
                 // The context is page text emitted verbatim, so it still carries the extractor's
@@ -266,7 +284,7 @@ public class MarkdownBuilder
         }
 
         sb.AppendLine(">");
-        sb.AppendLine($"> {GetLabel(page, "highlight")}");
+        sb.AppendLine($"> *({PageSpan(page, annotIdx)}, highlight)*");
         sb.AppendLine();
     }
 
@@ -289,7 +307,7 @@ public class MarkdownBuilder
                 sb.AppendLine($"> **Comment:** {replacementComment}");
             }
             sb.AppendLine(">");
-            sb.AppendLine($"> {GetLabel(page, "suggested replacement")}");
+            sb.AppendLine($"> *({PageSpan(page, annotIdx)}, suggested replacement)*");
             sb.AppendLine();
             return;
         }
@@ -312,7 +330,7 @@ public class MarkdownBuilder
         }
 
         sb.AppendLine(">");
-        sb.AppendLine($"> {GetLabel(page, label)}");
+        sb.AppendLine($"> *({PageSpan(page, annotIdx)}, {label})*");
         sb.AppendLine();
     }
 

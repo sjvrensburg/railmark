@@ -230,6 +230,65 @@ internal static class TextLocator
     }
 
     /// <summary>
+    /// How much text, in normalised characters, may sit between the two halves of a quote split by
+    /// a page break — the running footer of one page and the running header of the next.
+    /// </summary>
+    internal const int MaxPageBreakGap = 300;
+
+    /// <summary>
+    /// Finds a quote that runs off the bottom of <paramref name="page"/> and on at the top of
+    /// <paramref name="next"/>: a head that ends the first page and a tail that starts the second,
+    /// each within <see cref="MaxPageBreakGap"/> of the break. The split may fall between words, or
+    /// inside a word hyphenated across the break. When several splits fit, the one with the least
+    /// text between its halves wins. Returns null when no split fits.
+    /// </summary>
+    internal static (QuoteMatch Head, QuoteMatch Tail)? FindAcrossPageBreak(NormalizedText page, NormalizedText next, string quote)
+    {
+        var needle = CleanText(quote);
+        (QuoteMatch Head, QuoteMatch Tail)? best = null;
+        int bestGap = int.MaxValue;
+
+        void Try(string head, string tail)
+        {
+            if (head.Length == 0 || tail.Length == 0) return;
+
+            var headAt = page.Text.LastIndexOf(head, StringComparison.OrdinalIgnoreCase);
+            if (headAt < 0) return;
+            var gapBefore = page.Text.Length - (headAt + head.Length);
+            if (gapBefore > MaxPageBreakGap) return;
+
+            var tailAt = next.Text.IndexOf(tail, StringComparison.OrdinalIgnoreCase);
+            if (tailAt < 0 || tailAt > MaxPageBreakGap) return;
+
+            if (gapBefore + tailAt >= bestGap) return;
+            bestGap = gapBefore + tailAt;
+            best = (page.MatchAt(headAt, head.Length), next.MatchAt(tailAt, tail.Length));
+        }
+
+        for (int k = 1; k < needle.Length; k++)
+        {
+            if (needle[k] == ' ')
+            {
+                Try(needle[..k], needle[(k + 1)..]);
+            }
+            else if (needle[k - 1] == '-')
+            {
+                // A real hyphen falling at the page end: "COVID-" | "19".
+                Try(needle[..k], needle[k..]);
+            }
+            else if (char.IsLetter(needle[k - 1]) && char.IsLetter(needle[k]))
+            {
+                // A word hyphenated over the break. The wrap hyphen may survive at the end of the
+                // page's text, or the normaliser may already have dropped it.
+                Try(needle[..k] + "-", needle[k..]);
+                Try(needle[..k], needle[k..]);
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
     /// The normalised text around <paramref name="match"/>, with the match itself bracketed as
     /// <c>[[…]]</c> — enough for an agent to confirm the quote landed where it meant it to.
     /// </summary>

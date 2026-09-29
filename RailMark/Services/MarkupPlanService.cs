@@ -23,6 +23,13 @@ public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Su
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Action { get; init; }
 
+    /// <summary>
+    /// Set when the quote runs over a page break: the 1-based page it ends on. The markup is then
+    /// split across the two pages.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? EndPage { get; init; }
+
     /// <summary>The text around the match with the match bracketed; populated on request (dry run).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Context { get; init; }
@@ -111,7 +118,7 @@ public static class MarkupPlanService
         // Pass 1 — locate every quote. Results are indexed by original plan position so the
         // report preserves plan order regardless of how geometry lookups are batched.
         var results = new MarkupEntryResult?[plan.Entries.Count];
-        var placements = new Placement?[plan.Entries.Count];
+        var placements = new List<Placement>?[plan.Entries.Count];
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
@@ -131,54 +138,99 @@ public static class MarkupPlanService
 
             var page = PageText(pageIndex);
             var (match, failure) = Locate(entry, page);
-            if (match is null)
+            if (match is not null)
             {
-                results[index] = failure;
+                placements[index] = [new Placement(pageIndex, match.Value.Match.CharStart, match.Value.Match.CharLength)];
+                results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
+                {
+                    MatchCount = match.Value.MatchCount,
+                    Warning = match.Value.Warning,
+                    Context = includeContext ? TextLocator.DescribeContext(page, match.Value.Match) : null,
+                };
                 continue;
             }
 
-            placements[index] = new Placement(pageIndex, match.Value.Match.CharStart, match.Value.Match.CharLength);
-            results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
+            // Not on the page as a whole: the quote may run on over the page break.
+            if (failure!.MatchCount == 0 && entry.Occurrence is null or 1 && pageIndex + 1 < pdf.PageCount)
             {
-                MatchCount = match.Value.MatchCount,
-                Warning = match.Value.Warning,
-                Context = includeContext ? TextLocator.DescribeContext(page, match.Value.Match) : null,
-            };
+                var nextPage = PageText(pageIndex + 1);
+                if (TextLocator.FindAcrossPageBreak(page, nextPage, entry.Quote) is { } split
+                    && TextLocator.HasContext(page, split.Head, entry.ContextBefore, null)
+                    && TextLocator.HasContext(nextPage, split.Tail, null, entry.ContextAfter))
+                {
+                    placements[index] =
+                    [
+                        new Placement(pageIndex, split.Head.CharStart, split.Head.CharLength),
+                        new Placement(pageIndex + 1, split.Tail.CharStart, split.Tail.CharLength),
+                    ];
+                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
+                    {
+                        MatchCount = 1,
+                        EndPage = entry.Page + 1,
+                        Context = includeContext
+                            ? TextLocator.DescribeContext(page, split.Head) + $" ‖ page {entry.Page + 1}: "
+                              + TextLocator.DescribeContext(nextPage, split.Tail)
+                            : null,
+                    };
+                    continue;
+                }
+            }
+
+            results[index] = failure;
         }
 
         // Pass 2 — fetch geometry in a single batched GetTextRangeRects call per page instead of
         // one native call per entry.
-        var geometry = new List<RectF>?[plan.Entries.Count];
-        foreach (var group in Enumerable.Range(0, plan.Entries.Count)
-                     .Where(i => placements[i] is not null)
-                     .GroupBy(i => placements[i]!.Value.PageIndex))
+        var geometry = new List<RectF>[plan.Entries.Count][];
+        for (int index = 0; index < plan.Entries.Count; index++)
+            geometry[index] = new List<RectF>[placements[index]?.Count ?? 0];
+
+        var parts = Enumerable.Range(0, plan.Entries.Count)
+            .Where(i => placements[i] is not null)
+            .SelectMany(i => placements[i]!.Select((placement, part) => (index: i, part, placement)));
+        foreach (var group in parts.GroupBy(p => p.placement.PageIndex))
         {
-            var indices = group.ToList();
+            var onPage = group.ToList();
             var rectLines = textService.GetTextRangeRects(
                 pdf.PdfBytes, group.Key,
-                indices.Select(i => (placements[i]!.Value.CharStart, placements[i]!.Value.CharLength)).ToList(),
+                onPage.Select(p => (p.placement.CharStart, p.placement.CharLength)).ToList(),
                 password);
-            for (int k = 0; k < indices.Count; k++)
-                geometry[indices[k]] = MergeLineRects(k < rectLines.Count ? rectLines[k] : []);
+            for (int k = 0; k < onPage.Count; k++)
+                geometry[onPage[k].index][onPage[k].part] = MergeLineRects(k < rectLines.Count ? rectLines[k] : []);
         }
 
         // Pass 3 — build and merge annotations, in plan order.
         for (int index = 0; index < plan.Entries.Count; index++)
         {
-            if (placements[index] is not { } placement) continue;
+            if (placements[index] is not { } entryPlacements) continue;
             var entry = plan.Entries[index];
-            var rects = geometry[index] ?? [];
-            if (rects.Count == 0)
+            if (geometry[index].Any(rects => rects.Count == 0))
             {
                 results[index] = Failure(entry, $"Quote matched on page {entry.Page} but produced no geometry.")
                     with { MatchCount = results[index]!.MatchCount };
                 continue;
             }
 
-            var annotation = BuildAnnotation(entry, rects, pdf, placement.PageIndex);
-            var action = Merge(file, placement.PageIndex, annotation);
+            // A note is a single marker, pinned beside where the quote starts; markup covers
+            // every part, with the comment carried by the first alone so it isn't repeated.
+            var actions = new List<string>();
+            int partsToBuild = entry.Type == MarkupType.Note ? 1 : entryPlacements.Count;
+            for (int part = 0; part < partsToBuild; part++)
+            {
+                var pageIndex = entryPlacements[part].PageIndex;
+                var annotation = part == 0
+                    ? BuildAnnotation(entry, geometry[index][part], pdf, pageIndex)
+                    : BuildContinuation(entry, geometry[index][part]);
+                actions.Add(Merge(file, pageIndex, annotation));
+            }
 
-            results[index] = results[index]! with { SpanCount = rects.Count, Action = action };
+            results[index] = results[index]! with
+            {
+                SpanCount = geometry[index].Sum(rects => rects.Count),
+                Action = actions.All(a => a == ActionUnchanged) ? ActionUnchanged
+                    : actions.Contains(ActionAdded) ? ActionAdded
+                    : ActionUpdated,
+            };
         }
 
         var result = new MarkupPlanApplyResult { Removed = removed };
@@ -234,8 +286,10 @@ public static class MarkupPlanService
     {
         if (a.GetType() != b.GetType()) return false;
         if (!string.Equals(a.Author, b.Author, StringComparison.Ordinal)) return false;
-        // A suggested replacement and a plain deletion over the same words are different edits.
+        // A suggested replacement and a plain deletion over the same words are different edits,
+        // and so are a markup and the continuation of one that started on the previous page.
         if (ReplacementMarkup.TryParse(a, out _, out _) != ReplacementMarkup.TryParse(b, out _, out _)) return false;
+        if (ContinuationMarkup.Is(a) != ContinuationMarkup.Is(b)) return false;
 
         return (a, b) switch
         {
@@ -347,6 +401,22 @@ public static class MarkupPlanService
         return merged;
     }
 
+    /// <summary>
+    /// The part of a markup that carries on over a page break. It is the same kind of markup as the
+    /// first part, tagged as a continuation and without the comment (or replacement), which the
+    /// first part carries — a strikeout here is the tail of the edit, not a deletion of its own.
+    /// </summary>
+    private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects)
+    {
+        var type = entry.Type == MarkupType.Replace ? MarkupType.Strikeout : entry.Type;
+        var annotation = BuildTextMarkup(type, rects);
+        annotation.Subject = ContinuationMarkup.Subject;
+        annotation.Color = entry.Color ?? DefaultColors[entry.Type];
+        annotation.Author = entry.Author ?? "AI Reviewer";
+        annotation.Source = AnnotationSource.RailReader;
+        return annotation;
+    }
+
     private static Annotation BuildAnnotation(MarkupEntry entry, List<RectF> rects, IPdfService pdf, int pageIndex)
     {
         var color = entry.Color ?? DefaultColors[entry.Type];
@@ -367,32 +437,7 @@ public static class MarkupPlanService
             };
         }
 
-        // Highlight/StrikeOut are drawn across the full glyph box, but Underline/Squiggly are a
-        // stroke beneath the text, so passing them the same full-height quad draws the line at
-        // cap-height and it reads as a strike-through instead of an underline (issue #13).
-        bool baselineBand = entry.Type is MarkupType.Underline or MarkupType.Squiggly;
-        var markupRects = rects
-            .Select(r =>
-            {
-                if (!baselineBand)
-                    return new HighlightRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
-
-                var height = r.Bottom - r.Top;
-                var bandHeight = MathF.Max(2f, height * 0.15f);
-                return new HighlightRect(r.Left, r.Bottom - bandHeight, r.Right - r.Left, bandHeight);
-            })
-            .ToList();
-
-        TextMarkupAnnotation annotation = entry.Type switch
-        {
-            MarkupType.Highlight => new HighlightAnnotation(),
-            MarkupType.Underline => new UnderlineAnnotation(),
-            MarkupType.Strikeout or MarkupType.Replace => new StrikeOutAnnotation(),
-            MarkupType.Squiggly => new SquigglyAnnotation(),
-            _ => throw new ArgumentOutOfRangeException(nameof(entry), entry.Type, "Unhandled markup type."),
-        };
-
-        annotation.Rects = markupRects;
+        var annotation = BuildTextMarkup(entry.Type, rects);
         if (entry.Type == MarkupType.Replace)
         {
             annotation.Subject = ReplacementMarkup.Subject;
@@ -406,6 +451,36 @@ public static class MarkupPlanService
         annotation.Author = author;
         annotation.Source = AnnotationSource.RailReader;
 
+        return annotation;
+    }
+
+    private static TextMarkupAnnotation BuildTextMarkup(MarkupType type, List<RectF> rects)
+    {
+        // Highlight/StrikeOut are drawn across the full glyph box, but Underline/Squiggly are a
+        // stroke beneath the text, so passing them the same full-height quad draws the line at
+        // cap-height and it reads as a strike-through instead of an underline (issue #13).
+        bool baselineBand = type is MarkupType.Underline or MarkupType.Squiggly;
+        var markupRects = rects
+            .Select(r =>
+            {
+                if (!baselineBand)
+                    return new HighlightRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+
+                var height = r.Bottom - r.Top;
+                var bandHeight = MathF.Max(2f, height * 0.15f);
+                return new HighlightRect(r.Left, r.Bottom - bandHeight, r.Right - r.Left, bandHeight);
+            })
+            .ToList();
+
+        TextMarkupAnnotation annotation = type switch
+        {
+            MarkupType.Highlight => new HighlightAnnotation(),
+            MarkupType.Underline => new UnderlineAnnotation(),
+            MarkupType.Strikeout or MarkupType.Replace => new StrikeOutAnnotation(),
+            MarkupType.Squiggly => new SquigglyAnnotation(),
+            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unhandled markup type."),
+        };
+        annotation.Rects = markupRects;
         return annotation;
     }
 }

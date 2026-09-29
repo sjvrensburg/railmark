@@ -108,6 +108,42 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Markup_Over_A_Page_Break_Renders_Once_Across_Both_Pages()
+    {
+        var file = MakeFile(
+        [
+            (0, [new HighlightAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)], Contents = "why?" }]),
+            (1, [new HighlightAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the whole", [(1, 0)] = "measurement with" };
+        var pageTexts = new Dictionary<int, string> { [0] = "A run repeated the whole", [1] = "measurement with a batch" };
+
+        var md = Build(file, [H("Results", 0)], hlTexts, pageTexts).Build();
+
+        Assert.Contains("> **the whole measurement with**", md);
+        Assert.Contains("*(pp. 1–2, highlight)*", md);
+        Assert.Equal(1, CountOccurrences(md, "> **Comment:** why?"));
+        Assert.DoesNotContain("(p. 2, highlight)", md);
+    }
+
+    [Fact]
+    public void Replacement_Over_A_Page_Break_Renders_As_One_Replacement()
+    {
+        var file = MakeFile(
+        [
+            (0, [new StrikeOutAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)], Subject = "Replacement", Contents = "Replace with: every" }]),
+            (1, [new StrikeOutAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the whole", [(1, 0)] = "measurement" };
+
+        var md = Build(file, [H("Results", 0)], hlTexts).Build();
+
+        Assert.Contains("> ~~the whole measurement~~ → **every**", md);
+        Assert.Contains("*(pp. 1–2, suggested replacement)*", md);
+        Assert.DoesNotContain("suggested deletion", md);
+    }
+
+    [Fact]
     public void Highlight_Without_Page_Text_Shows_Bold_Highlight()
     {
         var file = MakeFile([(0, [new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] }])]);

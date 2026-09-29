@@ -16,6 +16,8 @@ public sealed record AnnotationExport(string Source, List<AnnotationRecord> Anno
 public sealed record AnnotationRecord
 {
     public required int Page { get; init; }
+    /// <summary>Set when the markup runs over a page break: the 1-based page it ends on.</summary>
+    public int? EndPage { get; init; }
     public required string Type { get; init; }
     /// <summary>The annotation's /NM — what a plan entry's <c>inReplyTo</c> refers to.</summary>
     public string? Id { get; init; }
@@ -66,6 +68,10 @@ public class AnnotationJsonBuilder(
     public AnnotationExport BuildExport()
     {
         var headings = new HeadingIndex(outline, headingPositions);
+        // A markup split over a page break is reported once, as its first half with the whole
+        // quote, so the record re-applies as a single plan entry.
+        var continuations = ContinuationMarkup.Pair(annotations);
+        var folded = continuations.Values.ToHashSet();
 
         var ordered = annotations.Pages
             .SelectMany(p => p.Value.Select((a, i) => (page: p.Key, annotIdx: i, annotation: a)))
@@ -75,7 +81,16 @@ public class AnnotationJsonBuilder(
         var records = new List<AnnotationRecord>();
         foreach (var (page, annotIdx, annotation) in ordered)
         {
+            if (folded.Contains((page, annotIdx))) continue;
+
             var quote = annotation is TextMarkupAnnotation ? MarkupText(page, annotIdx) : null;
+            int? endPage = null;
+            if (continuations.TryGetValue((page, annotIdx), out var tail))
+            {
+                endPage = tail.page + 1;
+                if (quote != null && MarkupText(tail.page, tail.annotIdx) is { } tailText)
+                    quote = ContinuationMarkup.JoinText(quote, tailText);
+            }
             string? comment = annotation.EffectiveContents;
             string? replacement = null;
             if (ReplacementMarkup.TryParse(annotation, out var parsedReplacement, out var parsedComment))
@@ -87,10 +102,11 @@ public class AnnotationJsonBuilder(
             records.Add(new AnnotationRecord
             {
                 Page = page + 1,
+                EndPage = endPage,
                 Type = replacement != null ? "replace" : TypeName(annotation),
                 Id = NullIfEmpty(annotation.NativeId),
                 Quote = quote,
-                Occurrence = quote != null ? Occurrence(page, annotIdx, quote) : null,
+                Occurrence = quote != null && endPage == null ? Occurrence(page, annotIdx, quote) : null,
                 Comment = NullIfEmpty(comment),
                 Replacement = replacement,
                 Color = annotation.Color,

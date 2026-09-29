@@ -353,6 +353,36 @@ else
     echo "  ok   --format json rejected with --export"
 fi
 
+# --- 9. Across a page break ------------------------------------------------------
+# Page 2 ends mid-sentence, then a "Page 2" footer; the sentence finishes at the
+# top of page 3. A quote of it must be split over the break, footer skipped.
+echo ""
+section "quote across a page break"
+cat > "${WORK}/span.json" <<'PLAN'
+{"entries":[
+ {"page":2,"quote":"repeated the whole measurement with a fresh batch","type":"highlight","comment":"spans pages"},
+ {"page":2,"quote":"the whole measurement","type":"replace","replacement":"each measurement"}
+]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/span.json" --dry-run > "${WORK}/span-dry.out" 2>/dev/null
+jcheck "split over the break"          "${WORK}/span-dry.out" 'all(.[]; .success and .endPage == 3 and .spanCount == 2)'
+jcheck "footer not part of the match"  "${WORK}/span-dry.out" '.[0].context | contains("[[repeated the whole]]") and contains("page 3: [[measurement with a fresh batch]]")'
+
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/span.json" -o "${WORK}/span.pdf" > /dev/null 2>&1
+"${RAILMARK[@]}" "${WORK}/span.pdf" -o "${WORK}/span.md" > /dev/null 2>&1
+check "one highlight across both pages" "${WORK}/span.md" "**repeated the whole measurement with a fresh batch**"
+check "labelled with both pages"        "${WORK}/span.md" "*(pp. 2–3, highlight)*"
+check "one replacement across both"     "${WORK}/span.md" "~~the whole measurement~~ → **each measurement**"
+nocheck "continuation not a deletion"   "${WORK}/span.md" "suggested deletion"
+
+"${RAILMARK[@]}" "${WORK}/span.pdf" --format json -o - > "${WORK}/span.ann.json" 2>/dev/null
+jcheck "JSON reports it once, with endPage" "${WORK}/span.ann.json" \
+    '[.annotations[] | select(.author == "AI Reviewer")] | length == 2 and all(.[]; .page == 2 and .endPage == 3)'
+jq '{entries: [.annotations[] | select(.author == "AI Reviewer") | {page, quote, type, comment, replacement}]}' \
+    "${WORK}/span.ann.json" > "${WORK}/span-rt.json"
+"${RAILMARK[@]}" "${WORK}/span.pdf" --apply-markup "${WORK}/span-rt.json" --dry-run > "${WORK}/span-rt.out" 2>/dev/null
+jcheck "spanning records re-apply unchanged" "${WORK}/span-rt.out" 'length == 2 and all(.[]; .action == "unchanged")'
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

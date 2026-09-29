@@ -123,6 +123,43 @@ public class AnnotationJsonBuilderTests
         Assert.Null(records[1].Occurrence);
     }
 
+    [Theory]
+    [InlineData("the whole", "measurement with", "the whole measurement with")]
+    [InlineData("is inter-", "pretable here", "is interpretable here")]
+    public void Continuation_Folds_Into_Its_Head_As_One_Record(string headText, string tailText, string expected)
+    {
+        var file = MakeFile(
+            (0, new HighlightAnnotation { Author = "AI", Rects = [new(10, 100, 50, 10)], Contents = "why?" }),
+            (0, new HighlightAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)], Contents = "head" }),
+            (1, new HighlightAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }));
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "unrelated", [(0, 1)] = headText, [(1, 0)] = tailText };
+
+        var records = new AnnotationJsonBuilder(file, "doc.pdf", [], texts).BuildExport().Annotations;
+
+        Assert.Equal(2, records.Count);
+        var spanning = records[1];
+        Assert.Equal(1, spanning.Page);
+        Assert.Equal(2, spanning.EndPage);
+        Assert.Equal(expected, spanning.Quote);
+        Assert.Equal("head", spanning.Comment);
+        Assert.Null(records[0].EndPage);
+    }
+
+    [Fact]
+    public void Continuation_Pairs_Only_With_Same_Kind_And_Author()
+    {
+        var file = MakeFile(
+            (0, new UnderlineAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)] }),
+            (0, new HighlightAnnotation { Author = "Human", Rects = [new(10, 710, 50, 10)] }),
+            (0, new HighlightAnnotation { Author = "AI", Rects = [new(10, 500, 50, 10)] }),
+            (1, new HighlightAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }));
+
+        var pairs = ContinuationMarkup.Pair(file);
+
+        Assert.Equal((1, 0), Assert.Single(pairs, p => p.Key == (0, 2)).Value);
+        Assert.Single(pairs);
+    }
+
     [Fact]
     public void Image_Paths_Use_Forward_Slashes()
     {

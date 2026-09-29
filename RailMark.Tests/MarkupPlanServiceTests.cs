@@ -711,6 +711,163 @@ public class MarkupPlanServiceTests
         Assert.Single(file.Pages[0]);
     }
 
+    // --- Across a page break ---
+
+    private const string Page1 = "Intro text. A second run of the experiment repeated the whole\nPage 2";
+    private const string Page2 = "Journal header\nmeasurement with a fresh batch of samples, and it agreed.";
+
+    private static (AnnotationFile file, MarkupPlanApplyResult result) ResolveTwoPages(
+        MarkupEntry entry, AnnotationFile? existing = null, bool includeContext = false, string page2 = Page2)
+        => MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [entry] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = Page1, [1] = page2 }),
+            existing,
+            includeContext: includeContext);
+
+    [Fact]
+    public void FindAcrossPageBreak_Splits_Between_Words_Past_Footer_And_Header()
+    {
+        var split = TextLocator.FindAcrossPageBreak(
+            NormalizedText.From(Page1), NormalizedText.From(Page2), "repeated the whole measurement with a fresh batch");
+
+        Assert.NotNull(split);
+        Assert.Equal("repeated the whole", Page1.Substring(split!.Value.Head.CharStart, split.Value.Head.CharLength));
+        Assert.Equal("measurement with a fresh batch", Page2.Substring(split.Value.Tail.CharStart, split.Value.Tail.CharLength));
+    }
+
+    [Theory]
+    [InlineData("the model is inter-")]
+    [InlineData("the model is inter-\n")]
+    public void FindAcrossPageBreak_Splits_A_Word_Hyphenated_Over_The_Break(string page1)
+    {
+        var split = TextLocator.FindAcrossPageBreak(
+            NormalizedText.From(page1), NormalizedText.From("pretable in practice."), "model is interpretable in practice");
+
+        Assert.NotNull(split);
+        Assert.StartsWith("model is inter", page1.Substring(split!.Value.Head.CharStart, split.Value.Head.CharLength));
+        Assert.Equal(0, split.Value.Tail.CharStart);
+    }
+
+    [Fact]
+    public void FindAcrossPageBreak_Rejects_Halves_Far_From_The_Break()
+    {
+        var farFromEnd = "repeated the whole " + new string('x', 400);
+
+        Assert.Null(TextLocator.FindAcrossPageBreak(
+            NormalizedText.From(farFromEnd), NormalizedText.From(Page2), "repeated the whole measurement"));
+        Assert.Null(TextLocator.FindAcrossPageBreak(
+            NormalizedText.From(Page1), NormalizedText.From(new string('y', 400) + " measurement with"), "the whole measurement with"));
+    }
+
+    [Fact]
+    public void FindAcrossPageBreak_Returns_Null_When_The_Tail_Is_Missing()
+        => Assert.Null(TextLocator.FindAcrossPageBreak(
+            NormalizedText.From(Page1), NormalizedText.From(Page2), "repeated the whole thing entirely"));
+
+    [Fact]
+    public void Resolve_Splits_A_Quote_Across_The_Page_Break()
+    {
+        var (file, result) = ResolveTwoPages(
+            new() { Page = 1, Quote = "the whole measurement with", Type = MarkupType.Highlight, Comment = "why?" },
+            includeContext: true);
+
+        var entry = Assert.Single(result.Entries);
+        Assert.True(entry.Success, entry.Error);
+        Assert.Equal(1, entry.Page);
+        Assert.Equal(2, entry.EndPage);
+        Assert.Equal(2, entry.SpanCount);
+        Assert.Equal("added", entry.Action);
+        Assert.Contains("[[the whole]]", entry.Context);
+        Assert.Contains("page 2: ", entry.Context);
+        Assert.Contains("[[measurement with]]", entry.Context);
+
+        var head = Assert.IsType<HighlightAnnotation>(Assert.Single(file.Pages[0]));
+        var tail = Assert.IsType<HighlightAnnotation>(Assert.Single(file.Pages[1]));
+        Assert.Equal("why?", head.Contents);
+        Assert.Null(head.Subject);
+        Assert.Null(tail.Contents);
+        Assert.Equal("Continuation", tail.Subject);
+        Assert.Equal(head.Author, tail.Author);
+        Assert.Equal(head.Color, tail.Color);
+    }
+
+    [Fact]
+    public void Resolve_Splits_A_Replacement_With_The_Replacement_On_The_First_Half()
+    {
+        var (file, _) = ResolveTwoPages(
+            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Replace, Replacement = "every measurement" });
+
+        var head = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[0]));
+        var tail = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[1]));
+        Assert.True(ReplacementMarkup.TryParse(head, out var replacement, out _));
+        Assert.Equal("every measurement", replacement);
+        Assert.False(ReplacementMarkup.TryParse(tail, out _, out _));
+        Assert.True(ContinuationMarkup.Is(tail));
+        Assert.Equal("#0066FF", tail.Color);
+    }
+
+    [Fact]
+    public void Resolve_Places_A_Spanning_Note_Once_On_The_First_Page()
+    {
+        var (file, result) = ResolveTwoPages(
+            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Note, Comment = "c" });
+
+        Assert.Equal(2, result.Entries[0].EndPage);
+        Assert.IsType<TextNoteAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.False(file.Pages.ContainsKey(1));
+    }
+
+    [Fact]
+    public void Resolve_Reapplying_A_Spanning_Quote_Is_Unchanged()
+    {
+        var entry = new MarkupEntry { Page = 1, Quote = "the whole measurement with", Type = MarkupType.Underline };
+        var (first, _) = ResolveTwoPages(entry);
+        var (second, result) = ResolveTwoPages(entry, existing: first);
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Single(second.Pages[0]);
+        Assert.Single(second.Pages[1]);
+    }
+
+    [Fact]
+    public void Resolve_Checks_Context_On_Both_Sides_Of_The_Break()
+    {
+        var ok = ResolveTwoPages(new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Highlight, ContextBefore = "repeated", ContextAfter = "with a" });
+        var badAfter = ResolveTwoPages(new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Highlight, ContextAfter = "nope" });
+
+        Assert.True(ok.result.Entries[0].Success);
+        Assert.False(badAfter.result.Entries[0].Success);
+    }
+
+    [Fact]
+    public void Resolve_Does_Not_Look_Past_The_Last_Page_Or_For_A_Later_Occurrence()
+    {
+        var onLast = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 2, Quote = "samples, and it agreed. More", Type = MarkupType.Highlight }] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = Page1, [1] = Page2 }));
+        var laterOccurrence = ResolveTwoPages(new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Highlight, Occurrence = 2 });
+
+        Assert.False(onLast.result.Entries[0].Success);
+        Assert.False(laterOccurrence.result.Entries[0].Success);
+        Assert.Contains("not found", laterOccurrence.result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Resolve_Prefers_A_Whole_Match_On_The_Page_Over_A_Split()
+    {
+        // The quote is wholly on page 1 as well as splittable over the break: the page wins.
+        var page1 = "the whole measurement is here. " + Page1;
+        var (file, result) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Highlight }] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = page1, [1] = Page2 }));
+
+        Assert.Null(result.Entries[0].EndPage);
+        Assert.False(file.Pages.ContainsKey(1));
+    }
+
     [Fact]
     public void Resolve_Merges_Into_Existing_AnnotationFile()
     {
