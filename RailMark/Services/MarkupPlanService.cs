@@ -1,4 +1,5 @@
 using RailMark.Models;
+using RailReader.Core;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
 
@@ -17,13 +18,17 @@ public static class MarkupPlanService
 {
     private const float NoteMarginInset = 24f;
 
+    // Drawn from RailReader2's own five-colour palette, using the same per-tool default hue, so
+    // AI-authored markup is indistinguishable in colour from markup a reader adds by hand — and
+    // `--color` picks both up together. Core keeps the per-tool indices private, so they are
+    // mirrored here.
     private static readonly Dictionary<MarkupType, string> DefaultColors = new()
     {
-        [MarkupType.Highlight] = "#FFFF00",
-        [MarkupType.Underline] = "#00AAFF",
-        [MarkupType.Strikeout] = "#FF0000",
-        [MarkupType.Squiggly] = "#FF8800",
-        [MarkupType.Note] = "#FFCC00",
+        [MarkupType.Highlight] = AnnotationInteractionHandler.AnnotationColors[0], // Yellow
+        [MarkupType.Underline] = AnnotationInteractionHandler.AnnotationColors[1], // Green
+        [MarkupType.Strikeout] = AnnotationInteractionHandler.AnnotationColors[2], // Red
+        [MarkupType.Squiggly] = AnnotationInteractionHandler.AnnotationColors[1],  // Green
+        [MarkupType.Note] = AnnotationInteractionHandler.AnnotationColors[0],      // Yellow
     };
 
     /// <summary>

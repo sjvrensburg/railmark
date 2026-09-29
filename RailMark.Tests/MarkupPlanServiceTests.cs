@@ -238,16 +238,23 @@ public class MarkupPlanServiceTests
         Assert.Equal(40f, rect.Y + rect.H, precision: 3);
     }
 
-    [Fact]
-    public void Resolve_Applies_Default_Color_When_Omitted()
+    // Literal hex, not AnnotationInteractionHandler.AnnotationColors: if Core's palette changes,
+    // this should fail so the skill's schema doc gets updated along with it.
+    [Theory]
+    [InlineData(MarkupType.Highlight, "#FFFF00")]
+    [InlineData(MarkupType.Underline, "#00A000")]
+    [InlineData(MarkupType.Strikeout, "#FF0000")]
+    [InlineData(MarkupType.Squiggly, "#00A000")]
+    [InlineData(MarkupType.Note, "#FFFF00")]
+    public void Resolve_Applies_RailReader_Palette_Default_When_Color_Omitted(MarkupType type, string expected)
     {
-        var plan = new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Strikeout }] };
+        var plan = new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = type }] };
         var pdf = new FakePdfService(pageCount: 1, pageSize: (600, 800));
         var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." });
 
         var (file, _) = MarkupPlanService.Resolve(plan, pdf, text);
 
-        Assert.Equal("#FF0000", file.Pages[0][0].Color);
+        Assert.Equal(expected, file.Pages[0][0].Color);
     }
 
     [Fact]
