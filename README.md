@@ -2,9 +2,9 @@
 
 A command-line tool that converts PDFs to structured Markdown, and writes AI-authored markup back into them. It has three modes:
 
-- **Annotation mode** (default) — extracts annotations from *any* annotated PDF (highlights, underlines, strikeouts, squigglies, notes, rectangles, freehand, carets, free-text) and groups them under document headings. It reads the annotations the PDF itself carries, so it does not matter which tool wrote them — Acrobat, Preview, Okular, Zotero, [RailReader2](https://github.com/sjvrensburg/railreader2), or RailMark's own `--apply-markup`. RailReader2 sidecar files are picked up too, for PDFs that cannot be written to.
+- **Annotation mode** (default) — extracts annotations from *any* annotated PDF (highlights, underlines, strikeouts, squigglies, notes, rectangles, freehand, carets, free-text) and groups them under document headings, as Markdown or, with `--format json`, as structured records an agent can act on. It reads the annotations the PDF itself carries, so it does not matter which tool wrote them — Acrobat, Preview, Okular, Zotero, [RailReader2](https://github.com/sjvrensburg/railreader2), or RailMark's own `--apply-markup`. RailReader2 sidecar files are picked up too, for PDFs that cannot be written to.
 - **Export mode** (`--export`) — produces layout-aware full-document Markdown from *any* PDF, with optional VLM transcription of figures. Existing annotations are folded in when present, but are not required.
-- **Apply-markup mode** (`--apply-markup`) — writes real PDF annotations (highlight, underline, strikeout, squiggly, margin notes) from a JSON markup plan. Designed for an AI agent acting as a technical editor: quote a passage, say what kind of markup and why, and RailMark resolves the quote to exact PDF geometry and writes it in. See [Skill for AI agents](#skill-for-ai-agents) below.
+- **Apply-markup mode** (`--apply-markup`) — writes real PDF annotations (highlight, underline, strikeout, squiggly, suggested replacements, margin notes, and replies to existing comments) from a JSON markup plan. Designed for an AI agent acting as a technical editor: quote a passage, say what kind of markup and why, and RailMark resolves the quote to exact PDF geometry and writes it in. See [Skill for AI agents](#skill-for-ai-agents) below.
 
 Built directly on the [RailReader.Core](https://github.com/sjvrensburg/RailReaderCore) NuGet packages — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
 
@@ -84,14 +84,16 @@ The tag must match `<Version>` in `RailMark.csproj` and `VERSION` in `install.sh
 - Extracts all annotation types: highlights, underlines, strikeouts, squiggly, text notes, rectangles, freehand drawings, carets, and free-text
 - Groups annotations under document headings from the PDF outline, in reading order — including two headings on the same page, which are split by their position down the page
 - Summary table at the top with annotation counts per section
-- Highlights appear **bold** within their surrounding text context (fuzzy whitespace matching)
+- Highlights appear **bold** within their surrounding text context (fuzzy whitespace matching) — on the occurrence actually marked, when the same words appear more than once on the page
 - Strikeouts and carets read as editorial intent — a strikeout is a *suggested deletion*, a caret a *suggested insertion*, and a caret paired with a strikeout collapses into a single *suggested replacement*
+- Replies are threaded under the comment they answer, and a markup that runs over a page break reads as one entry
 - Text notes and reviewer comments are rendered as blockquotes; a comment that merely repeats the text it covers (as Skim writes it) is dropped rather than printed twice
 - Cleans PDF text-extraction artifacts: soft hyphens, control characters, ligatures (`ﬁ` → `fi`), smart quotes, and words split across a line break by a wrap hyphen
 - Optional cropped screenshots for rectangle and freehand annotations
-- Page-range and colour filtering
+- Page-range, colour, author and date filtering (`--author`, `--exclude-author`, `--since`)
+- `--format json` for machine-readable output: one record per annotation, shaped like a markup-plan entry, with its id for replying
 - `--export` mode for layout-aware full-document Markdown from any PDF, with optional VLM figure transcription
-- `--apply-markup` mode writes highlight/underline/strikeout/squiggly/note annotations into a PDF from a JSON plan, for AI-agent-driven document review
+- `--apply-markup` mode writes highlight/underline/strikeout/squiggly/replace/note annotations and replies into a PDF from a JSON plan, for AI-agent-driven document review. Quotes can say which occurrence they mean, may run over a page break, and re-applying a plan never duplicates markup
 
 ## Usage
 
@@ -102,16 +104,43 @@ Options:
   -o <path>            Output file (default: <pdf-stem>-annotations.md). Use - for stdout
   --pages <range>      Only include annotations from these pages (e.g. "1,3,5-10")
   --color <hex>        Filter by annotation colour (e.g. "#FF0000" or "ff0000,ffcc00")
+  --author <names>     Only include annotations by these authors (comma-separated,
+                       case-insensitive)
+  --exclude-author <names>
+                       Leave out annotations by these authors (e.g. "AI Reviewer" to
+                       see only the human markup)
+  --since <date>       Only include annotations created or last modified on or after
+                       <date> (e.g. 2026-09-01 or 2026-09-01T14:30; local time unless
+                       an offset is given). Annotations without a date are left out
   --images             Include cropped screenshots for rect/freehand annotations
+  --format <markdown|json>
+                       Annotation-mode output format (default: markdown). json emits
+                       one record per annotation, shaped like a markup-plan entry
+                       (default output: <pdf-stem>-annotations.json)
   --export             Export full document to Markdown (layout-aware, includes annotations)
   --no-vlm             Disable VLM transcription (with --export)
   --vlm-endpoint <url> Override VLM endpoint URL (with --export)
   --vlm-model <name>   Override VLM model name (with --export)
   --vlm-api-key <key>  Override VLM API key (with --export)
+  --accelerator <cpu|gpu>
+                       Layout-model inference backend (with --export, default: cpu).
+                       gpu opportunistically uses a native WebGPU execution provider
+                       and falls back to cpu if no device is available.
   --apply-markup <plan.json>
-                       Write PDF markup (highlight/underline/strikeout/note) from a
-                       JSON markup plan. Reports per-entry results as JSON on stdout.
-  --dry-run            With --apply-markup, resolve and report only; do not write
+                       Write PDF markup (highlight/underline/strikeout/squiggly/
+                       replace/note) from a JSON markup plan (- reads it from stdin)
+                       into a new PDF (default: <pdf-stem>-marked.pdf,
+                       or -o <path>). The input PDF is never modified unless --in-place
+                       is given. Reports per-entry results as JSON on stdout.
+  --in-place           With --apply-markup, write annotations directly into the input
+                       PDF instead of a copy. Cannot be combined with -o.
+  --replace-author <name>
+                       With --apply-markup, first remove every existing annotation
+                       by <name> — to revise an earlier round of markup rather than
+                       add to it. (Re-applying a plan never duplicates identical
+                       markup either way.)
+  --dry-run            With --apply-markup, resolve and report only; do not write.
+                       The report then also shows the text around each match
   --version            Show the railmark version
   -h, --help           Show this help
 ```
@@ -137,6 +166,18 @@ railmark document.pdf --pages "1,3,5-10"
 railmark document.pdf --color "#FF0000"
 railmark document.pdf --color "ff0000,ffcc00"
 ```
+
+### Structured output for agents
+
+```bash
+railmark document.pdf --format json -o annotations.json
+railmark document.pdf --format json --exclude-author "AI Reviewer" -o -   # only the human markup
+railmark document.pdf --since 2026-09-01                                  # only what changed since
+```
+
+Each JSON record carries the annotation's `page`, `type`, `quote`, `comment`, `author`,
+`heading` and `id`. The fields match a markup-plan entry, so records can be fed straight back
+into `--apply-markup`, or answered with a reply that names the record's `id`.
 
 ### Full-document export (any PDF)
 
@@ -165,10 +206,26 @@ annotation type, and an optional comment:
 ```
 
 Each entry's `quote` must be an exact, verbatim substring of the PDF's extracted text (matching
-tolerates whitespace differences but not paraphrasing). RailMark resolves each quote to its
-precise on-page geometry and writes a real PDF annotation. Results are printed as JSON to
-stdout — one object per entry, `success`/`error` — so a driving script or agent can detect and
-retry any quote that didn't resolve. Use `--dry-run` to check a plan without writing anything.
+tolerates whitespace, ligature, smart-quote and wrap-hyphen differences but not paraphrasing).
+RailMark resolves each quote to its precise on-page geometry and writes a real PDF annotation.
+Results are printed as JSON to stdout — one object per entry, `success`/`error` — so a driving
+script or agent can detect and retry any quote that didn't resolve. Use `--dry-run` to check a
+plan without writing anything; it also shows the text around each match.
+
+Beyond the basics:
+
+- **Repeated quotes.** A quote that occurs more than once on its page is flagged with a
+  `warning`; say which match you mean with `occurrence` or `contextBefore`/`contextAfter`.
+- **Page breaks.** A quote may run from the bottom of one page onto the next, past a running
+  footer or header.
+- **Suggested replacements.** `"type": "replace"` with a `"replacement"` strikes the quote
+  through and records the text that should replace it.
+- **Replies.** `"inReplyTo": "<id>"` (ids come from `--format json`) answers an existing comment;
+  a reply note needs no quote.
+- **Re-applying is safe.** Markup already present is reported `unchanged` rather than duplicated,
+  and a changed comment is `updated` in place. `--replace-author <name>` clears an earlier round
+  first.
+
 See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full schema.
 
 ## Skill for AI agents

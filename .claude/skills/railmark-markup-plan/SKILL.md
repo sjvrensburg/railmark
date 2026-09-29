@@ -1,12 +1,14 @@
 ---
 name: railmark-markup-plan
 description: >-
-  Produces and applies a structured PDF review-markup plan (highlight/underline/strikeout/note)
-  against a PDF using the railmark CLI, resolving AI-agent-quoted text to exact PDF annotation
-  geometry and writing native PDF annotations. Use when asked to review, mark up, annotate, or
+  Produces and applies a structured PDF review-markup plan (highlight/underline/strikeout/
+  replace/note, and replies to existing comments) against a PDF using the railmark CLI,
+  resolving AI-agent-quoted text to exact PDF annotation geometry and writing native PDF
+  annotations. Use when asked to review, mark up, annotate, or
   leave editorial comments on a PDF as a technical editor or proofreader — e.g. "mark up this
   PDF", "add review comments to this document", "highlight the key claims and flag errors in
-  this paper", "give feedback on this student's submission as tracked PDF markup". Also covers
+  this paper", "give feedback on this student's submission as tracked PDF markup", "respond to
+  the reviewer's comments on this PDF". Also covers
   installing the railmark CLI and this skill itself — use it for "install railmark", "set up the
   railmark skill", or when railmark is missing from PATH. Not for extracting existing annotations
   from a PDF (use railmark's default mode) or for producing a plain Markdown summary of a PDF
@@ -15,8 +17,9 @@ description: >-
 
 # RailMark markup plan
 
-RailMark can write real, native PDF annotations (highlights, underlines, strikeouts, margin
-notes) from a JSON "markup plan" you author. This skill is the workflow for acting as a
+RailMark can write real, native PDF annotations (highlights, underlines, strikeouts, suggested
+replacements, margin notes, and replies to existing comments) from a JSON "markup plan" you
+author. This skill is the workflow for acting as a
 technical editor on a PDF: read it, decide what to mark up, express that as a markup plan, and
 apply it.
 
@@ -120,19 +123,19 @@ current one, keep following this file directly.
    railmark <pdf> --apply-markup plan.json --dry-run
    ```
    This is not optional — it's the cheap way to catch a plan where most quotes fail to resolve
-   before writing anything. Read the JSON result (see step 5) and fix any failures before
-   proceeding.
+   before writing anything. In the JSON result, fix every entry with `"success": false` **and
+   every entry carrying a `warning`** — a warning means the quote occurs more than once on the
+   page and RailMark had to guess which one you meant (see "Repeated quotes" below). A dry run
+   also reports each match's surrounding text as `context`, with the match in `[[…]]`: skim it to
+   confirm each quote landed on the passage you intended.
 
 5. **Apply for real, then read the JSON result printed to stdout again.** By default this writes
    a new file — `<pdf-stem>-marked.pdf`, or `-o <path>` to name it yourself — and never modifies
    the input PDF. Each entry reports `success` and, on failure, an `error`. If any entry failed,
    don't retry the identical quote — re-read that page's exact text (re-run `--export`, or
-   re-open `notes.md` at that page) and correct the quote before retrying just the failed
-   entries. To fix a handful of failures without duplicating the entries that already succeeded,
-   run a second `--apply-markup` with a plan containing **only** the corrected entries, applying
-   on top of the previously-produced `-marked.pdf` (pass it as the `<pdf>` argument) — applying is
-   additive, so re-running the whole plan against the same output would duplicate every
-   already-successful annotation.
+   re-open `notes.md` at that page) and correct the quote. Then re-run the **whole** corrected
+   plan against the same input: applying is idempotent, so entries that already succeeded report
+   `"action": "unchanged"` and are not duplicated.
 
 ## The most important rule: quotes must be verbatim
 
@@ -149,8 +152,22 @@ match the source:
 - Keep quotes reasonably short (a phrase or sentence, not a full paragraph) — longer quotes are
   more likely to hit a whitespace or hyphenation difference somewhere in the middle.
 
+A quote may run over a page break — give the page it starts on, and RailMark splits it (the result
+reports `endPage`).
+
 Full schema details, matching rules, and the result-report format are in
 `references/markup-plan-schema.md` — read it before drafting your first plan.
+
+## Repeated quotes
+
+A short quote often occurs more than once on its page — a term, a number, "the model". RailMark
+then marks the first match and flags the entry with a `warning` and a `matchCount` above 1. Don't
+leave that to chance. Either lengthen the quote until it is unique, or say which match you mean:
+
+- `"occurrence": 2` — the second match on the page, in reading order; or
+- `"contextBefore": "…"` / `"contextAfter": "…"` — a few words sitting right beside the quote.
+
+Check the dry run's `context` for the entry to confirm the choice.
 
 ## Editorial conventions
 
@@ -161,10 +178,36 @@ intentional rather than exhaustive:
   statistic, a causal claim, a key result).
 - **`underline`** — a term or definition worth flagging (jargon, an ambiguous or undefined term,
   something the reader should look up or the author should define).
-- **`strikeout`** — something you're confident is a factual or logical error.
+- **`strikeout`** — something you're confident is a factual or logical error, or text that should
+  simply be deleted.
+- **`replace`** — a concrete wording fix: the quote is struck through and `replacement` holds the
+  text that should replace it (typos, word choice, a corrected figure). Prefer this over a
+  strikeout plus a note whenever you know exactly what the text should say.
 - **`note`** — substantive commentary that doesn't fit as a short comment on a highlight/
   underline/strikeout — a structural suggestion, a request to reconsider an argument, a
   cross-reference to another part of the document.
+
+## Responding to existing comments
+
+When the PDF already carries a reviewer's comments and you're asked to answer them, read them as
+structured data rather than scraping the export:
+
+```
+railmark <pdf> --format json -o annotations.json
+```
+
+Each record has an `id`, `page`, `type`, `quote` (the text it marks), `comment` and `author`.
+`--exclude-author "AI Reviewer"` shows only the human markup; `--since 2026-09-01` only what changed
+since a date. Reply with a `note` entry naming the record's `id` in `inReplyTo` (and its `page`);
+no `quote` is needed — the reply is pinned beside the comment it answers:
+
+```json
+{ "page": 2, "type": "note", "inReplyTo": "<id>", "comment": "Done — reworded in section 3." }
+```
+
+Records are shaped like plan entries, so a record can also be copied into a plan as-is.
+
+## Density
 
 Aim for the density of a real edit: roughly one entry per notable issue or claim per page, not
 one per sentence. Marking everything is as unhelpful to the reader as marking nothing.
@@ -175,8 +218,14 @@ one per sentence. Marking everything is as unhelpful to the reader as marking no
 "some entries failed, the rest were still applied"). For each failure:
 
 1. Re-read the exact text of that page (don't trust your first reading of it).
-2. Correct the quote to match verbatim.
-3. Re-run `--apply-markup` against the `-marked.pdf` produced by the previous run, with just the
-   corrected entries (or the whole plan again — applying is additive, so re-running
-   previously-successful entries will duplicate them; prefer a smaller follow-up plan containing
-   only the fixed entries).
+2. Correct the quote to match verbatim — or, for an `occurrence`/context error, fix the choice of
+   match.
+3. Re-run the whole corrected plan. Applying is idempotent: already-applied entries come back
+   `"action": "unchanged"`, and an entry whose comment you changed comes back `"updated"`.
+
+## Revising an earlier round
+
+To replace a previous round of your markup rather than add to it — say, after the author has
+revised the document, or when you'd drop some earlier entries — apply the new plan with
+`--replace-author "AI Reviewer"` (or the `author` your plan uses). That first removes every
+existing annotation by that author, leaving everyone else's untouched.

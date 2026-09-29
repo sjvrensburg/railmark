@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A .NET tool (**RailMark**) that converts PDFs to Markdown suitable for AI summarisation, and writes AI-authored PDF markup back. Three modes: annotation mode extracts annotations from PDFs reviewed in RailReader2; export mode (`--export`) produces layout-aware full-document Markdown from any PDF; apply-markup mode (`--apply-markup`) writes highlight/underline/strikeout/squiggly/note annotations into a PDF from a JSON markup plan, so an AI agent can act as a technical editor. Uses the **RailReader.Core NuGet packages** directly — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
+A .NET tool (**RailMark**) that converts PDFs to Markdown suitable for AI summarisation, and writes AI-authored PDF markup back. Three modes: annotation mode extracts annotations from PDFs reviewed in RailReader2; export mode (`--export`) produces layout-aware full-document Markdown from any PDF; apply-markup mode (`--apply-markup`) writes highlight/underline/strikeout/squiggly/replace/note annotations, and replies to existing annotations, into a PDF from a JSON markup plan, so an AI agent can act as a technical editor. Uses the **RailReader.Core NuGet packages** directly — no external CLI required. Distributed as a self-contained AppImage for Linux x86-64.
 
 The `railmark-markup-plan` Claude Code skill (`.claude/skills/railmark-markup-plan/`) teaches an agent the apply-markup workflow — see [Skill for AI-driven markup](#skill-for-ai-driven-markup) below.
 
@@ -13,7 +13,7 @@ The `railmark-markup-plan` Claude Code skill (`.claude/skills/railmark-markup-pl
 - **Build:** `dotnet build`
 - **Test:** `dotnet test`
 - **Single test:** `dotnet test --filter "FullyQualifiedName~TestName"`
-- **Run:** `dotnet run --project RailMark/ -- <pdf> [-o output.md] [--pages] [--color] [--images] [--export]`
+- **Run:** `dotnet run --project RailMark/ -- <pdf> [-o output.md] [--pages] [--color] [--author] [--exclude-author] [--since] [--format json] [--images] [--export]`
 - **Pack (AppImage):** `./build-appimage.sh [--include-model <path>]`
 - **Pack (tarball):** `./build-tarball.sh [--include-model <path>]`
 - **Fetch layout model:** `./scripts/download-model.sh` → `models/PP-DocLayoutV3.onnx`
@@ -28,11 +28,11 @@ Solution file is `RailMark.slnx` (new XML `.slnx` format, not traditional `.sln`
 
 **Annotation mode (default):**
 1. `PdfiumResolver.Initialize()` + `SkiaPdfServiceFactory` init
-2. Manual arg parsing → `CompositeAnnotationStore.Default.Load(pdf)` → page/color filter
-3. `PdfTextService.ExtractPageText()` per page → `ExtractTextInRect()` per rect of every `TextMarkupAnnotation` (all four subtypes, not just highlights). The probe rect comes from `TextExtractionBounds()`: underline/squiggly rects are only the thin baseline band `MarkupPlanService` writes, so they are grown back to the glyph box (`H / 0.15f`) or they match no characters at all.
+2. Manual arg parsing → `CompositeAnnotationStore.Default.Load(pdf)` → page/color filter, then `AnnotationFilter.ByAuthor()` / `.Since()` (`--author`, `--exclude-author`, `--since`; `Since` uses `ModifiedUtc ?? CreatedUtc` and drops undated annotations)
+3. `PdfTextService.ExtractPageText()` per page → `ExtractTextInRect()` per rect of every `TextMarkupAnnotation` (all four subtypes, not just highlights). The probe rect comes from `TextExtractionBounds()`: underline/squiggly rects are only the thin baseline band `MarkupPlanService` writes, so they are grown back to the glyph box (`H / 0.15f`) or they match no characters at all. The same pass records `markupOffsets` — the lowest `CharBox.Index` inside each markup's first rect — so output can tell *which* occurrence of repeated words was marked.
 4. `ResolveHeadingPositions()` — locates each outline title in its own page's text (`TextLocator.ResolveQuote` → batched `GetTextRangeRects`) so headings can be ordered within a page
 5. Optional `ScreenshotService.CropAnnotationsAsync()` for `--images`
-6. `MarkdownBuilder.Build()` → write file
+6. `MarkdownBuilder.Build()`, or `AnnotationJsonBuilder.Build()` with `--format json` → write file. JSON mode writes `{"annotations": []}` rather than nothing when there is nothing to report.
 
 **Export mode (`--export`):**
 1. `PdfiumResolver.Initialize()` + `SkiaPdfServiceFactory` init
@@ -40,10 +40,10 @@ Solution file is `RailMark.slnx` (new XML `.slnx` format, not traditional `.sln`
 
 **Apply-markup mode (`--apply-markup <plan.json>`):**
 1. `PdfiumResolver.Initialize()` + `SkiaPdfServiceFactory` init
-2. Deserialize the JSON plan (`RailMark.Models.MarkupPlan`) → `CompositeAnnotationStore.Default.Load(pdf)` for the existing `AnnotationFile` to merge into
-3. `MarkupPlanService.Resolve()` — per page: `PdfTextService.ExtractPageText()` once, `TextLocator.ResolveQuote()` per entry (quote → char range), batched `GetTextRangeRects()` per page → `MergeLineRects()` (the API returns one rect per character; merges same-line rects by vertical overlap) → builds the matching `Annotation` subtype
+2. Deserialize the JSON plan (`RailMark.Models.MarkupPlan`; `--apply-markup -` reads stdin) → `CompositeAnnotationStore.Default.Load(pdf)` for the existing `AnnotationFile` to merge into
+3. `MarkupPlanService.Resolve()` in three passes. **Locate:** `--replace-author` removals first; per entry validate, find the `inReplyTo` parent by `NativeId`, then `TextLocator.FindQuoteMatches()` on a cached `NormalizedText` per page, narrowed by `contextBefore`/`contextAfter` and indexed by `occurrence` (an unqualified multi-match succeeds with a `warning`); a quote not on its page is tried across the break with `FindAcrossPageBreak()`. **Geometry:** every placed part batched into one `GetTextRangeRects()` per page → `MergeLineRects()` (the API returns one rect per character; merges same-line rects by vertical overlap). **Build:** annotations in plan order, each through `Merge()`, which dedupes against what the page already holds (see below)
 4. Unless `--dry-run`, `CompositeAnnotationStore.Default.Save(pdf, file)` writes native PDF annotations (falls back to RailReader2 sidecar for signed/locked PDFs)
-5. Per-entry results (success/error, in original plan order) printed as JSON to stdout; human summary to stderr; exit code `0` all resolved, `2` partial failure, `1` hard error
+5. Per-entry results (success/error, `matchCount`, `action`, optional `warning`/`endPage`/`inReplyTo`, and `context` on `--dry-run`; in original plan order) printed as JSON to stdout; human summary, failures and warnings to stderr; exit code `0` all resolved, `2` partial failure, `1` hard error. Warnings don't affect the exit code.
 
 ### Models
 
@@ -51,16 +51,31 @@ Annotation types come from `RailReader.Core.Models` via `[JsonPolymorphic]` — 
 
 Outline from `IPdfService.Outline` → `List<OutlineEntry>` (Title, Page?, Children).
 
-`RailMark.Models.MarkupPlan` (`Models/MarkupPlan.cs`) is RailMark's own DTO for the `--apply-markup` JSON input — not part of RailReader.Core. `MarkupPlan { List<MarkupEntry> Entries }`; `MarkupEntry { Page (1-based), Quote, Type, Comment?, Color?, Author? }`; `MarkupType` enum (`Highlight`/`Underline`/`Strikeout`/`Squiggly`/`Note`). See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full field reference.
+`RailMark.Models.MarkupPlan` (`Models/MarkupPlan.cs`) is RailMark's own DTO for the `--apply-markup` JSON input — not part of RailReader.Core. `MarkupPlan { List<MarkupEntry> Entries }`; `MarkupEntry { Page (1-based), Quote?, Type, Comment?, Color?, Author?, Occurrence?, ContextBefore?, ContextAfter?, InReplyTo?, Replacement? }`; `MarkupType` enum (`Highlight`/`Underline`/`Strikeout`/`Squiggly`/`Note`/`Replace`). `Quote` is optional only for a `Note` with `InReplyTo`; `MarkupPlanService.Validate()` enforces the per-type rules, since `required` can't express them. See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full field reference.
 
 ### Services
 
 - **ScreenshotService.cs** — Crops rendered page PNGs to annotation bounding boxes. Takes `IPdfService` (renders via `RenderPage()` cast to `SkiaRenderedPage`). Groups nearby freehand strokes via a **union-find** algorithm (`MergeDistancePt = 50`). No shell-out.
-- **MarkdownBuilder.cs** — Assigns annotations to headings by flattening the PDF outline and taking the last heading preceding the annotation in reading order — `(page, y)`, not page alone, so two headings on one page split their annotations correctly. Heading `y` comes from the optional `headingPositions` ctor argument (keyed by `MarkdownBuilder.HeadingKey`), which `Program.cs` builds via `ResolveHeadingPositions()`; a heading whose title can't be located on its page falls back to `y = 0` and therefore to the old page-level behaviour. Sorts by (page, SortY). Emits: summary table, bold-in-context highlights with 2-tier fuzzy matching (exact → whitespace-collapsed → fallback bold, via `TextLocator`), blockquoted notes, optional image embeds. Heading depth: 0 → `##`, 1 → `###`, 2+ → `####`.
+- **MarkdownBuilder.cs** — Assigns annotations to headings by flattening the PDF outline and taking the last heading preceding the annotation in reading order — `(page, y)`, not page alone, so two headings on one page split their annotations correctly. The heading logic lives in `HeadingIndex`. Heading `y` comes from the optional `headingPositions` ctor argument (keyed by `HeadingIndex.Key`), which `Program.cs` builds via `ResolveHeadingPositions()`; a heading whose title can't be located on its page falls back to `y = 0` and therefore to the old page-level behaviour. Sorts by (page, SortY). Emits: summary table, bold-in-context highlights (normalised match via `TextLocator.FindQuoteMatches`, choosing the match nearest the annotation's `markupOffsets` entry so repeated words bold the right occurrence; fallback: bold text alone), blockquoted notes, optional image embeds. Heading depth: 0 → `##`, 1 → `###`, 2+ → `####`.
   - All four `TextMarkupAnnotation` subtypes are rendered, not just highlights. Labels carry editorial intent: strikeout → *suggested deletion*, lone caret → *suggested insertion*. A `StrikeOutAnnotation` whose `InReplyTo` names a `CaretAnnotation`'s `NativeId` is folded into that caret as a single *suggested replacement* entry (`BuildCaretReplacements`), and suppressed from its own emission via `_groupChildren`.
+  - Also rendered as single entries: a RailMark replacement strikeout (`ReplacementMarkup`), and a markup split over a page break (`ContinuationMarkup` — the tail joins `_groupChildren`, the head is labelled `pp. N–N+1`). Reply notes (`ReplyMarkup`) are threaded under their parent.
   - An annotation whose `/Contents` merely repeats the text it covers (Skim writes the selection into `/Contents`) has the comment dropped — see `IsEchoOfMarkedText`.
-- **TextLocator.cs** — Shared text-matching primitive (`NormalizeWithMap`, `CleanText`), extracted from `MarkdownBuilder`. Normalisation collapses whitespace, drops soft hyphens and control characters, expands ligatures and smart quotes via `CharacterSubstitutions`, and rejoins words split across a line break by a wrap hyphen (dropped when the preceding character is lowercase — `com-\npileable`; kept, but with the break swallowed, otherwise — `COVID-\n19`). Because a ligature expands to more characters than it consumes, the index map is built as a `List<int>` and can be longer than the input. `ResolveQuote(pageText, quote)` resolves a quoted string to an exact `(CharStart, CharLength)` range (tier 1 exact match, tier 2 normalised match), returning `null` on no match — used by `MarkupPlanService` as a hard per-entry error, unlike `MarkdownBuilder`'s own silent bold-fallback.
-- **MarkupPlanService.cs** — `Resolve(plan, pdf, textService, existing, password)` turns a `MarkupPlan` into an `AnnotationFile` (merged with `existing`, not overwritten) plus a `MarkupPlanApplyResult` of per-entry outcomes. Does not persist — caller calls `CompositeAnnotationStore.Save()`. Note placement: right-margin inset (24pt) at the vertical centre of the quote's last matched line.
+- **TextLocator.cs** — Shared text-matching primitive (`NormalizeWithMap`, `CleanText`), extracted from `MarkdownBuilder`. Normalisation collapses whitespace, drops soft hyphens and control characters, expands ligatures and smart quotes via `CharacterSubstitutions`, and rejoins words split across a line break by a wrap hyphen (dropped when the preceding character is lowercase — `com-\npileable`; kept, but with the break swallowed, otherwise — `COVID-\n19`). Because a ligature expands to more characters than it consumes, the index map is built as a `List<int>` and can be longer than the input. `ResolveQuote(pageText, quote)` returns the first match's `(CharStart, CharLength)` or `null` — now only used for heading positions.
+  - `FindQuoteMatches(NormalizedText, quote)` returns *every* match, searched in normalised space (a superset of verbatim matching, so the count is honest). `NormalizedText.MatchAt()` maps back to the original with the end taken one past the last matched char, so trailing dropped markers aren't given geometry. `HasContext`, `DescribeContext` and `FindAcrossPageBreak` (head ending page N and tail starting N+1, each within `MaxPageBreakGap` = 300 normalised chars of the break) build on it.
+- **MarkupPlanService.cs** — `Resolve(plan, pdf, textService, existing, password, includeContext, replaceAuthor)` turns a `MarkupPlan` into an `AnnotationFile` (merged with `existing`, not overwritten) plus a `MarkupPlanApplyResult` of per-entry outcomes and a `Removed` count. Does not persist — caller calls `CompositeAnnotationStore.Save()`. Note placement: right-margin inset (24pt) at the vertical centre of the quote's last matched line; a reply note without a quote sits `ReplyStep` (20pt) below its parent's anchor per earlier reply.
+  - **Dedupe** (`Merge`/`IsSameMarkup`): same subtype + author + geometry within `SameGeometryTolerance` (1.5pt — geometry read back from a PDF isn't bit-identical) is the same annotation; differing comment/colour updates it in place. Replacement vs plain strikeout, and continuation vs not, are distinct. Replies are matched on parent + author + text instead of geometry, because their position depends on how many replies preceded them.
+  - `--replace-author` (`RemoveByAuthor`) leaves emptied pages as empty lists, **not** removed keys: `PdfAnnotationWriter.WriteReconciled` only visits pages present in the file, so a dropped key would leave the old annotations in the PDF.
+- **HeadingIndex.cs** — outline order plus (page, y) reading order, extracted from `MarkdownBuilder` so both output formats file annotations under the same heading. `HeadingIndex.Key` is the key `headingPositions` uses (`MarkdownBuilder.HeadingKey` forwards to it).
+- **AnnotationJsonBuilder.cs** — `--format json`. One `AnnotationRecord` per annotation in reading order; field names deliberately match `MarkupEntry` so records re-apply as a plan. `occurrence` is filled only when the quote repeats on the page (resolved via `markupOffsets`); continuations fold into their head with `endPage`.
+- **AnnotationFilter.cs** — `Where`, `ByAuthor` (case-insensitive; anonymous annotations never match an include list and are never excluded), `Since`.
+
+#### Conventions forced by PDFium
+
+PDFium can neither **create a caret** nor **write `/IRT`** (see `PdfAnnotationWriter` in RailReaderCore), so three RailMark conventions stand in for the native structures. Each lives in its own small class, which both writers and readers go through:
+
+- **ReplacementMarkup.cs** — a `replace` entry is one `StrikeOutAnnotation` with `/Subj "Replacement"` and `/Contents "Replace with: <text>"` (+ `"\n\n" + comment`), instead of Acrobat's caret + strikeout pair. `TryParse` recognises it.
+- **ContinuationMarkup.cs** — a quote over a page break becomes two annotations; the second has `/Subj "Continuation"` and no contents. `Pair()` matches each to its head (previous page, same subtype and author, bottom-most), and both extractors fold it in, so it reports as one markup spanning pp. N–N+1.
+- **ReplyMarkup.cs** — a reply's `/NM` is `<parent /NM>#reply-<guid>`, set on the model's `NativeId` before saving (the reconciler writes a preset `/NM` as-is). `ParentOf()` prefers a real `/IRT` (`InReplyTo`), else parses the id. `MarkdownBuilder` threads reply *notes* under their parent as nested blockquotes.
 
 ### Page indexing
 
@@ -103,9 +118,9 @@ Because the xUnit tests fake the PDF services, nothing in them touches real pdfi
 ./tests/integration-smoke.sh ./dist/railmark-<version>-linux-x86_64.AppImage
 ```
 
-It exports the fixture, applies a markup plan, and extracts the annotations back, asserting quote resolution across a wrap hyphen and straight-vs-curly quotes, all four markup subtypes, and heading assignment for two headings on one page. CI runs it in `ci.yml` and against each of the three release artifacts.
+It exports the fixture, applies a markup plan, and extracts the annotations back, asserting quote resolution across a wrap hyphen and straight-vs-curly quotes, all four markup subtypes, and heading assignment for two headings on one page. Later sections cover occurrence/context selection, `replace`, idempotent re-apply and `--replace-author`, `--format json` (including feeding extracted records back in as a plan), quotes across a page break, replies, stdin plans and the author/date filters — each against real pdfium geometry and a real write/read, which is where tolerances and the `/Subj`/`/NM` conventions are actually proven. It needs `jq` (present on the GitHub runners). CI runs it in `ci.yml` and against each of the three release artifacts.
 
-`tests/fixtures/sample.pdf` is generated by `tests/fixtures/make-sample-pdf.py` — a dependency-free, byte-deterministic hand-built PDF (CI re-runs the generator and `cmp`s it against the committed file). Edit the generator, never the PDF. Its content is deliberate: two headings on page 1, a word split by a wrap hyphen, and curly quotes.
+`tests/fixtures/sample.pdf` is generated by `tests/fixtures/make-sample-pdf.py` — a dependency-free, byte-deterministic hand-built PDF (CI re-runs the generator and `cmp`s it against the committed file). Edit the generator, never the PDF. Its content is deliberate: two headings on page 1, a word split by a wrap hyphen, curly quotes, a phrase repeated on page 2, and a sentence that runs from page 2 — past a "Page 2" footer — onto page 3.
 
 A gotcha the fixture exposed: marked-up text passes through `CleanText`, so annotation-mode output has straight quotes where the export has curly ones.
 

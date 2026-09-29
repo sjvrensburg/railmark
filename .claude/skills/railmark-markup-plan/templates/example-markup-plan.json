@@ -14,16 +14,37 @@
       "color": "#FF0000"
     },
     {
+      "page": 4,
+      "quote": "is effected by",
+      "type": "replace",
+      "replacement": "is affected by",
+      "comment": "Word choice."
+    },
+    {
       "page": 5,
       "quote": "heteroscedasticity",
       "type": "underline",
-      "comment": "Domain term — confirm reader familiarity before publication."
+      "occurrence": 2,
+      "comment": "Defined only here, but first used earlier on the page — move the definition up."
+    },
+    {
+      "page": 5,
+      "quote": "the model",
+      "type": "squiggly",
+      "contextBefore": "we therefore reject",
+      "comment": "Which model? Three are introduced on this page."
     },
     {
       "page": 5,
       "quote": "the results generalize across all populations studied",
       "type": "note",
       "comment": "Strong claim; the study only covers a single-country sample — consider softening."
+    },
+    {
+      "page": 6,
+      "type": "note",
+      "inReplyTo": "0e968f48-0492-42a8-9e95-6af423c8f20a",
+      "comment": "Yes — the mean, as stated in the methods section."
     }
   ]
 }

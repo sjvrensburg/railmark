@@ -166,6 +166,27 @@ public class MarkupPlanServiceTests
         Assert.Null(plan.Entries[1].Author);
     }
 
+    [Fact]
+    public void Skill_Example_Plan_Deserializes_And_Every_Entry_Is_Well_Formed()
+    {
+        // The skill's template is an agent's only worked example of the schema — it must parse,
+        // and every entry must get past validation to quote resolution.
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "RailMark.slnx")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        var path = Path.Combine(dir!.FullName, ".claude", "skills", "railmark-markup-plan", "templates", "example-markup-plan.json");
+
+        var plan = JsonSerializer.Deserialize<MarkupPlan>(File.ReadAllText(path), JsonOptions)!;
+        Assert.Equal(Enum.GetValues<MarkupType>().ToHashSet(), plan.Entries.Select(e => e.Type).ToHashSet());
+
+        // Against an empty page every entry must fail only for want of its quote or parent.
+        var (_, result) = MarkupPlanService.Resolve(
+            plan, new FakePdfService(pageCount: 10, pageSize: (600, 800)), new FakePdfTextService([]));
+        Assert.All(result.Entries, e =>
+            Assert.True(e.Error!.StartsWith("Quote not found") || e.Error.StartsWith("No annotation with id"), e.Error));
+    }
+
     // --- MarkupPlanService.Resolve ---
 
     [Fact]
