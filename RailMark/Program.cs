@@ -214,7 +214,8 @@ if (markupPlanPath != null)
         return 1;
     }
 
-    var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(plan, markupPdf, markupTextService, existing);
+    var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(
+        plan, markupPdf, markupTextService, existing, includeContext: dryRun);
 
     var incomingAuthors = plan.Entries
         .Select(e => e.Author ?? "AI Reviewer")
@@ -271,6 +272,11 @@ if (markupPlanPath != null)
     {
         var quote = failed.Quote.Length > 60 ? failed.Quote[..60] + "…" : failed.Quote;
         Console.Error.WriteLine($"  FAILED page {failed.Page}: \"{quote}\" — {failed.Error}");
+    }
+    foreach (var warned in applyResult.Entries.Where(e => e.Warning != null))
+    {
+        var quote = warned.Quote.Length > 60 ? warned.Quote[..60] + "…" : warned.Quote;
+        Console.Error.WriteLine($"  WARNING page {warned.Page}: \"{quote}\" — {warned.Warning}");
     }
 
     return applyResult.AllSucceeded ? 0 : 2;
@@ -373,6 +379,9 @@ var textService = new PdfTextService();
 // highlights.
 var pageTexts = new Dictionary<int, string>();
 var highlightTexts = new Dictionary<(int page, int annotIdx), string>();
+// Where each markup starts in its page's text, so the bold-in-context line bolds the occurrence
+// that was actually marked rather than the first one on the page.
+var markupOffsets = new Dictionary<(int page, int annotIdx), int>();
 
 foreach (var (pageIdx, annotations) in annotationFile.Pages)
 {
@@ -407,6 +416,9 @@ foreach (var (pageIdx, annotations) in annotationFile.Pages)
             if (parts.Count > 0)
                 highlightTexts[(pageIdx, i)] =
                     TextLocator.SpanCoveringParts(pageText.Text, parts) ?? string.Join(" ", parts);
+
+            if (FirstCharIndexIn(pageText, TextExtractionBounds(markup, markup.Rects[0])) is { } offset)
+                markupOffsets[(pageIdx, i)] = offset;
         }
     }
 }
@@ -434,7 +446,8 @@ var builder = new MarkdownBuilder(
     pageTexts,
     images,
     imageRelDir,
-    headingPositions);
+    headingPositions,
+    markupOffsets);
 
 var markdown = builder.Build();
 
@@ -466,6 +479,23 @@ static (float X0, float Y0, float X1, float Y1) TextExtractionBounds(TextMarkupA
     var glyphHeight = MathF.Max(r.H / 0.15f, r.H);
     var bottom = r.Y + r.H;
     return (r.X, bottom - glyphHeight, r.X + r.W, bottom);
+}
+
+/// <summary>
+/// The lowest text index among the characters whose midpoint falls inside the rect — the same
+/// inclusion rule PageText.ExtractTextInRect uses — or null when the rect covers no characters.
+/// </summary>
+static int? FirstCharIndexIn(PageText pageText, (float X0, float Y0, float X1, float Y1) rect)
+{
+    int? first = null;
+    foreach (var box in pageText.CharBoxes)
+    {
+        var midX = (box.Left + box.Right) / 2f;
+        var midY = (box.Top + box.Bottom) / 2f;
+        if (midX < rect.X0 || midX > rect.X1 || midY < rect.Y0 || midY > rect.Y1) continue;
+        if (first is null || box.Index < first) first = box.Index;
+    }
+    return first;
 }
 
 /// <summary>

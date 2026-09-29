@@ -170,28 +170,117 @@ internal static class TextLocator
     }
 
     /// <summary>
-    /// Resolves <paramref name="quote"/> to an exact (CharStart, CharLength) range within
-    /// <paramref name="pageText"/>. Tier 1: exact case-insensitive match. Tier 2: normalised
-    /// match (whitespace, ligatures, smart quotes, soft hyphens), translated back to original
-    /// offsets. Returns null if neither matches.
+    /// Resolves <paramref name="quote"/> to the (CharStart, CharLength) range of its first match
+    /// within <paramref name="pageText"/>, or null if it does not occur. See
+    /// <see cref="FindQuoteMatches"/> for the matching rules.
     /// </summary>
     internal static (int CharStart, int CharLength)? ResolveQuote(string pageText, string quote)
     {
-        var idx = pageText.IndexOf(quote, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-            return (idx, quote.Length);
+        var matches = FindQuoteMatches(NormalizedText.From(pageText), quote);
+        return matches.Count == 0 ? null : (matches[0].CharStart, matches[0].CharLength);
+    }
 
-        var (normPage, pageMap) = NormalizeWithMap(pageText);
-        var normQuote = CleanText(quote);
+    /// <summary>
+    /// Every non-overlapping place <paramref name="quote"/> occurs in <paramref name="page"/>, in
+    /// reading order. Matching is case-insensitive and happens in normalised space (whitespace,
+    /// ligatures, smart quotes, wrap hyphens — see <see cref="NormalizeWithMap"/>), which is a
+    /// superset of a verbatim match, so a count taken here is the true number of candidates the
+    /// quote could refer to.
+    /// </summary>
+    internal static List<QuoteMatch> FindQuoteMatches(NormalizedText page, string quote)
+    {
+        var matches = new List<QuoteMatch>();
+        var needle = CleanText(quote);
+        if (needle.Length == 0) return matches;
 
-        var normIdx = normPage.IndexOf(normQuote, StringComparison.OrdinalIgnoreCase);
-        if (normIdx >= 0 && normIdx + normQuote.Length < pageMap.Length)
+        int from = 0;
+        while (from <= page.Text.Length - needle.Length)
         {
-            var origStart = pageMap[normIdx];
-            var origEnd = pageMap[normIdx + normQuote.Length];
-            return (origStart, origEnd - origStart);
+            var idx = page.Text.IndexOf(needle, from, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) break;
+            matches.Add(page.MatchAt(idx, needle.Length));
+            from = idx + needle.Length;
+        }
+        return matches;
+    }
+
+    /// <summary>
+    /// True when the normalised text immediately before <paramref name="match"/> ends with
+    /// <paramref name="before"/> and the text immediately after it starts with
+    /// <paramref name="after"/>. A null or blank context is not checked. The whitespace between the
+    /// quote and its context is ignored, so a context can be given with or without it.
+    /// </summary>
+    internal static bool HasContext(NormalizedText page, QuoteMatch match, string? before, string? after)
+    {
+        if (!string.IsNullOrWhiteSpace(before))
+        {
+            var preceding = page.Text[..match.NormStart].TrimEnd();
+            if (!preceding.EndsWith(CleanText(before), StringComparison.OrdinalIgnoreCase))
+                return false;
         }
 
-        return null;
+        if (!string.IsNullOrWhiteSpace(after))
+        {
+            var following = page.Text[match.NormEnd..].TrimStart();
+            if (!following.StartsWith(CleanText(after), StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The normalised text around <paramref name="match"/>, with the match itself bracketed as
+    /// <c>[[…]]</c> — enough for an agent to confirm the quote landed where it meant it to.
+    /// </summary>
+    internal static string DescribeContext(NormalizedText page, QuoteMatch match, int radius = 40)
+    {
+        var start = Math.Max(0, match.NormStart - radius);
+        var end = Math.Min(page.Text.Length, match.NormEnd + radius);
+        return (start > 0 ? "…" : "")
+            + page.Text[start..match.NormStart]
+            + "[[" + page.Text[match.NormStart..match.NormEnd] + "]]"
+            + page.Text[match.NormEnd..end]
+            + (end < page.Text.Length ? "…" : "");
+    }
+}
+
+/// <summary>A located quote: its range in the original text and in the normalised text.</summary>
+internal readonly record struct QuoteMatch(int CharStart, int CharLength, int NormStart, int NormEnd);
+
+/// <summary>
+/// Page text paired with its normalised form and the index map between them, computed once so a
+/// page can be searched for many quotes without normalising it again for each one.
+/// </summary>
+internal sealed class NormalizedText
+{
+    public string Original { get; }
+    public string Text { get; }
+    private readonly int[] _map;
+
+    private NormalizedText(string original, string text, int[] map)
+    {
+        Original = original;
+        Text = text;
+        _map = map;
+    }
+
+    public static NormalizedText From(string original)
+    {
+        var (text, map) = TextLocator.NormalizeWithMap(original);
+        return new NormalizedText(original, text, map);
+    }
+
+    /// <summary>
+    /// Translates a normalised range back to the original text. The end is taken one past the
+    /// last matched character rather than at the start of the next one, so characters the
+    /// normaliser dropped after the match (a trailing soft-hyphen marker, say) are not dragged
+    /// into the range and given geometry of their own.
+    /// </summary>
+    public QuoteMatch MatchAt(int normStart, int normLength)
+    {
+        var origStart = _map[normStart];
+        var origEnd = _map[normStart + normLength - 1] + 1;
+        return new QuoteMatch(origStart, origEnd - origStart, normStart, normStart + normLength);
     }
 }

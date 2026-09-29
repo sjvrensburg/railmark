@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using RailMark.Models;
 using RailReader.Core;
 using RailReader.Core.Models;
@@ -5,7 +6,19 @@ using RailReader.Core.Services;
 
 namespace RailMark.Services;
 
-public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0);
+public record MarkupEntryResult(int Page, string Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0)
+{
+    /// <summary>How many times the quote occurs on the page, before any context filtering.</summary>
+    public int MatchCount { get; init; }
+
+    /// <summary>Set when the entry was applied but may not have landed where intended.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Warning { get; init; }
+
+    /// <summary>The text around the match with the match bracketed; populated on request (dry run).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Context { get; init; }
+}
 
 public sealed class MarkupPlanApplyResult
 {
@@ -31,82 +44,154 @@ public static class MarkupPlanService
         [MarkupType.Note] = AnnotationInteractionHandler.AnnotationColors[0],      // Yellow
     };
 
+    /// <summary>Where an entry's quote landed: a character range on a 0-based page.</summary>
+    private readonly record struct Placement(int PageIndex, int CharStart, int CharLength);
+
     /// <summary>
     /// Resolves every entry's quote against the PDF's extracted page text, builds the
     /// corresponding Annotation objects, and merges them into an AnnotationFile (0-based
     /// Pages dict). Does not persist anything — the caller decides whether to Save.
     /// </summary>
+    /// <param name="includeContext">Report the text around each match (for dry runs).</param>
     public static (AnnotationFile file, MarkupPlanApplyResult result) Resolve(
         MarkupPlan plan,
         IPdfService pdf,
         IPdfTextService textService,
         AnnotationFile? existing = null,
-        string? password = null)
+        string? password = null,
+        bool includeContext = false)
     {
         var file = existing ?? new AnnotationFile();
-        // Indexed by original plan position so the report preserves plan order regardless of
-        // how entries are grouped by page for batched geometry lookups.
-        var results = new MarkupEntryResult?[plan.Entries.Count];
-
-        var indexed = plan.Entries.Select((entry, index) => (entry, index));
-        foreach (var group in indexed.GroupBy(t => t.entry.Page))
+        var pages = new Dictionary<int, NormalizedText>();
+        NormalizedText PageText(int pageIndex)
         {
-            var pageIndex = group.Key - 1;
+            if (!pages.TryGetValue(pageIndex, out var text))
+                pages[pageIndex] = text = NormalizedText.From(
+                    textService.ExtractPageText(pdf.PdfBytes, pageIndex, password).Text);
+            return text;
+        }
+
+        // Pass 1 — locate every quote. Results are indexed by original plan position so the
+        // report preserves plan order regardless of how geometry lookups are batched.
+        var results = new MarkupEntryResult?[plan.Entries.Count];
+        var placements = new Placement?[plan.Entries.Count];
+        for (int index = 0; index < plan.Entries.Count; index++)
+        {
+            var entry = plan.Entries[index];
+            var pageIndex = entry.Page - 1;
             if (pageIndex < 0 || pageIndex >= pdf.PageCount)
             {
-                foreach (var (entry, index) in group)
-                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Page {entry.Page} is out of range (document has {pdf.PageCount} pages).");
+                results[index] = Failure(entry,
+                    $"Page {entry.Page} is out of range (document has {pdf.PageCount} pages).");
                 continue;
             }
 
-            var pageText = textService.ExtractPageText(pdf.PdfBytes, pageIndex, password);
-
-            // Resolve every quote to a char range first, so geometry can be fetched in a single
-            // batched GetTextRangeRects call per page instead of one native call per entry.
-            var resolved = new List<(MarkupEntry entry, int index, int CharStart, int CharLength)>();
-            foreach (var (entry, index) in group)
+            var page = PageText(pageIndex);
+            var (match, failure) = Locate(entry, page);
+            if (match is null)
             {
-                var range = TextLocator.ResolveQuote(pageText.Text, entry.Quote);
-                if (range is null)
-                {
-                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Quote not found on page {entry.Page}.");
-                    continue;
-                }
-                resolved.Add((entry, index, range.Value.CharStart, range.Value.CharLength));
+                results[index] = failure;
+                continue;
             }
 
-            if (resolved.Count == 0)
-                continue;
+            placements[index] = new Placement(pageIndex, match.Value.Match.CharStart, match.Value.Match.CharLength);
+            results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null)
+            {
+                MatchCount = match.Value.MatchCount,
+                Warning = match.Value.Warning,
+                Context = includeContext ? TextLocator.DescribeContext(page, match.Value.Match) : null,
+            };
+        }
 
+        // Pass 2 — fetch geometry in a single batched GetTextRangeRects call per page instead of
+        // one native call per entry.
+        var geometry = new List<RectF>?[plan.Entries.Count];
+        foreach (var group in Enumerable.Range(0, plan.Entries.Count)
+                     .Where(i => placements[i] is not null)
+                     .GroupBy(i => placements[i]!.Value.PageIndex))
+        {
+            var indices = group.ToList();
             var rectLines = textService.GetTextRangeRects(
-                pdf.PdfBytes, pageIndex, resolved.Select(r => (r.CharStart, r.CharLength)).ToList(), password);
+                pdf.PdfBytes, group.Key,
+                indices.Select(i => (placements[i]!.Value.CharStart, placements[i]!.Value.CharLength)).ToList(),
+                password);
+            for (int k = 0; k < indices.Count; k++)
+                geometry[indices[k]] = MergeLineRects(k < rectLines.Count ? rectLines[k] : []);
+        }
 
-            for (int i = 0; i < resolved.Count; i++)
+        // Pass 3 — build and merge annotations, in plan order.
+        for (int index = 0; index < plan.Entries.Count; index++)
+        {
+            if (placements[index] is not { } placement) continue;
+            var entry = plan.Entries[index];
+            var rects = geometry[index] ?? [];
+            if (rects.Count == 0)
             {
-                var (entry, index, _, _) = resolved[i];
-                var rects = MergeLineRects(i < rectLines.Count ? rectLines[i] : []);
-                if (rects.Count == 0)
-                {
-                    results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, false,
-                        $"Quote matched on page {entry.Page} but produced no geometry.");
-                    continue;
-                }
-
-                var annotation = BuildAnnotation(entry, rects, pdf, pageIndex);
-                if (!file.Pages.TryGetValue(pageIndex, out var pageAnnotations))
-                    file.Pages[pageIndex] = pageAnnotations = [];
-                pageAnnotations.Add(annotation);
-
-                results[index] = new MarkupEntryResult(entry.Page, entry.Quote, entry.Type, true, null, SpanCount: rects.Count);
+                results[index] = Failure(entry, $"Quote matched on page {entry.Page} but produced no geometry.")
+                    with { MatchCount = results[index]!.MatchCount };
+                continue;
             }
+
+            var annotation = BuildAnnotation(entry, rects, pdf, placement.PageIndex);
+            if (!file.Pages.TryGetValue(placement.PageIndex, out var pageAnnotations))
+                file.Pages[placement.PageIndex] = pageAnnotations = [];
+            pageAnnotations.Add(annotation);
+
+            results[index] = results[index]! with { SpanCount = rects.Count };
         }
 
         var result = new MarkupPlanApplyResult();
         result.Entries.AddRange(results!);
         return (file, result);
     }
+
+    private static MarkupEntryResult Failure(MarkupEntry entry, string error)
+        => new(entry.Page, entry.Quote, entry.Type, false, error);
+
+    /// <summary>
+    /// Picks the match an entry refers to. Context narrows the candidates, <c>occurrence</c> then
+    /// indexes into what is left; with neither, the first match wins — but a quote that occurs
+    /// more than once is flagged, since the first match is only a guess at what was meant.
+    /// </summary>
+    private static ((QuoteMatch Match, int MatchCount, string? Warning)? Located, MarkupEntryResult? Failure) Locate(
+        MarkupEntry entry, NormalizedText page)
+    {
+        if (entry.Occurrence is < 1)
+            return (null, Failure(entry, $"occurrence must be 1 or greater (got {entry.Occurrence})."));
+
+        var all = TextLocator.FindQuoteMatches(page, entry.Quote);
+        if (all.Count == 0)
+            return (null, Failure(entry, $"Quote not found on page {entry.Page}."));
+
+        bool hasContext = !string.IsNullOrWhiteSpace(entry.ContextBefore) || !string.IsNullOrWhiteSpace(entry.ContextAfter);
+        var candidates = hasContext
+            ? all.Where(m => TextLocator.HasContext(page, m, entry.ContextBefore, entry.ContextAfter)).ToList()
+            : all;
+
+        if (candidates.Count == 0)
+            return (null, Failure(entry,
+                $"Quote occurs {Times(all.Count)} on page {entry.Page}, but never with the given contextBefore/contextAfter.")
+                with { MatchCount = all.Count });
+
+        if (entry.Occurrence is { } occurrence)
+        {
+            if (occurrence > candidates.Count)
+                return (null, Failure(entry,
+                    $"occurrence {occurrence} requested, but the quote occurs only {Times(candidates.Count)} on page {entry.Page}"
+                    + (hasContext ? " with the given context." : "."))
+                    with { MatchCount = all.Count });
+            return ((candidates[occurrence - 1], all.Count, null), null);
+        }
+
+        string? warning = candidates.Count > 1
+            ? $"Ambiguous: the quote occurs {Times(candidates.Count)} on page {entry.Page}"
+              + (hasContext ? " with the given context" : "")
+              + "; marked the first. Set occurrence, add contextBefore/contextAfter, or lengthen the quote."
+            : null;
+        return ((candidates[0], all.Count, warning), null);
+    }
+
+    private static string Times(int n) => n == 1 ? "once" : $"{n} times";
 
     /// <summary>
     /// GetTextRangeRects returns one rect per character, and per-glyph bounding boxes vary in

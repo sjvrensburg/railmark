@@ -39,12 +39,34 @@ check() {
     fi
 }
 
+# Assert a jq expression holds for a JSON file.
+jcheck() {
+    local label="$1" file="$2" expr="$3"
+    if jq -e "$expr" "$file" > /dev/null 2>&1; then
+        echo "  ok   ${label}"
+    else
+        echo "  FAIL ${label} — expected: ${expr}" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+# Assert a file does NOT contain a string.
+nocheck() {
+    local label="$1" haystack="$2" needle="$3"
+    if grep -qF -- "$needle" "$haystack"; then
+        echo "  FAIL ${label} — did not expect: ${needle}" >&2
+        failures=$((failures + 1))
+    else
+        echo "  ok   ${label}"
+    fi
+}
+
 echo "Fixture:  ${FIXTURE}"
 echo "Command:  ${RAILMARK[*]}"
 echo ""
 
 # --- 1. Export -------------------------------------------------------------
-echo "[1/4] --export"
+echo "[1/5] --export"
 "${RAILMARK[@]}" "$FIXTURE" --export --no-vlm -o "${WORK}/export.md" > /dev/null
 
 check "heading Introduction"   "${WORK}/export.md" "Introduction"
@@ -69,7 +91,7 @@ fi
 # Each quote is written the way an AI agent would write it, not the way the PDF
 # stores it: across a wrap hyphen, and with straight quotes for curly ones.
 echo ""
-echo "[2/4] --apply-markup"
+echo "[2/5] --apply-markup"
 cat > "${WORK}/plan.json" <<'PLAN'
 {"entries":[
  {"page":1,"quote":"interpretable in practice","type":"highlight","comment":"spans a wrap hyphen"},
@@ -96,7 +118,7 @@ check "wrap-hyphen highlight spans 2 lines" "${WORK}/apply.json" '"spanCount":2'
 
 # --- 3. Extract the annotations back ---------------------------------------
 echo ""
-echo "[3/4] annotation extraction"
+echo "[3/5] annotation extraction"
 "${RAILMARK[@]}" "${WORK}/marked.pdf" -o "${WORK}/annots.md" > /dev/null
 
 # The fixture ships 4 annotations of its own (a square and three ink strokes),
@@ -135,7 +157,7 @@ fi
 # The fixture carries a /Square over the "Introduction" heading and three /Ink
 # strokes on page 2 — two within the 50pt merge distance, one far away.
 echo ""
-echo "[4/4] --images"
+echo "[4/5] --images"
 "${RAILMARK[@]}" "$FIXTURE" --images -o "${WORK}/shots.md" > /dev/null
 
 shot_dir="${WORK}/shots-images"
@@ -174,6 +196,49 @@ if [ "$blank" -eq 0 ]; then
 else
     failures=$((failures + blank))
 fi
+
+# --- 5. Picking an occurrence ------------------------------------------------
+# "run of the experiment" occurs twice on page 2. An entry that doesn't say
+# which one it means must be flagged, and one that does must land on it.
+echo ""
+echo "[5/5] occurrence and context"
+cat > "${WORK}/occ.json" <<'PLAN'
+{"entries":[
+ {"page":2,"quote":"run of the experiment","type":"highlight","occurrence":2},
+ {"page":2,"quote":"run of the experiment","type":"underline"},
+ {"page":2,"quote":"run of the experiment","type":"squiggly","contextBefore":"every"},
+ {"page":2,"quote":"run of the experiment","type":"strikeout","occurrence":3}
+]}
+PLAN
+
+set +e
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/occ.json" --dry-run > "${WORK}/occ-dry.json" 2> "${WORK}/occ-dry.err"
+status=$?
+set -e
+if [ "$status" -eq 2 ]; then
+    echo "  ok   out-of-range occurrence fails the plan (exit 2)"
+else
+    echo "  FAIL expected exit 2 for an out-of-range occurrence, got ${status}" >&2
+    failures=$((failures + 1))
+fi
+jcheck "both occurrences counted"          "${WORK}/occ-dry.json" 'all(.[]; .matchCount == 2)'
+jcheck "explicit occurrence not flagged"   "${WORK}/occ-dry.json" '.[0].success and (.[0] | has("warning") | not)'
+jcheck "ambiguous quote flagged"           "${WORK}/occ-dry.json" '.[1].success and (.[1].warning | startswith("Ambiguous"))'
+jcheck "context picks a unique match"      "${WORK}/occ-dry.json" '.[2].success and (.[2] | has("warning") | not)'
+jcheck "occurrence 3 of 2 fails"           "${WORK}/occ-dry.json" '(.[3].success | not) and (.[3].error | contains("only 2 times"))'
+jcheck "dry run shows the second match"    "${WORK}/occ-dry.json" '.[0].context | contains("A second [[run of the experiment]]")'
+jcheck "context picks the first match"     "${WORK}/occ-dry.json" '.[2].context | contains("every [[run of the experiment]]")'
+check  "ambiguity warned on stderr"        "${WORK}/occ-dry.err" "WARNING page 2"
+
+# Apply for real, then check where the highlight actually sits: the extracted
+# Markdown bolds the marked occurrence within the page text.
+set +e
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/occ.json" -o "${WORK}/occ.pdf" > "${WORK}/occ.json.out" 2>/dev/null
+set -e
+jcheck "report omits context when not a dry run" "${WORK}/occ.json.out" 'all(.[]; has("context") | not)'
+"${RAILMARK[@]}" "${WORK}/occ.pdf" -o "${WORK}/occ.md" > /dev/null 2>&1
+check   "highlight landed on the second occurrence" "${WORK}/occ.md" "A second **run of the experiment** repeated"
+nocheck "first occurrence not bolded"               "${WORK}/occ.md" "every **run of the experiment**"
 
 echo ""
 if [ "$failures" -ne 0 ]; then

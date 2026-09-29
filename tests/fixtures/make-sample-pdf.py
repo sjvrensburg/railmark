@@ -14,6 +14,10 @@ geometry can test, and nothing else:
     so a quote of the joined word has to resolve across the break.
   * Curly quotes, so a quote written with straight ones has to normalise.
   * A page 2 with its own bookmark, so quotes are page-scoped.
+  * A phrase that occurs twice on page 2 ("run of the experiment"), so an
+    entry can pick its occurrence and an ambiguous one is flagged.
+  * A sentence that runs off the bottom of page 2 and continues at the top of
+    page 3, past a "Page 2" footer, so a quote can span the page break.
 
 It also carries annotations for the `--images` path, which needs geometry that
 renders to something visible:
@@ -80,6 +84,17 @@ page2_lines = [
     b"",
     b"No attempt was made to preserve the original ordering of the samples.",
     b"The effect was small but consistent across every run of the experiment.",
+    b"",
+    b"A second run of the experiment repeated the whole",
+]
+
+# Drawn after the body, as a real running footer is, so it sits between the two
+# halves of the sentence that crosses into page 3 in the extracted text.
+PAGE2_FOOTER = b"Page 2"
+FOOTER_Y = 60
+
+page3_lines = [
+    b"measurement with a fresh batch of samples, and it agreed.",
 ]
 
 
@@ -95,7 +110,7 @@ def build():
     objects = {}
 
     objects[1] = b"<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>"
-    objects[2] = b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"
+    objects[2] = b"<< /Type /Pages /Kids [3 0 R 4 0 R 16 0 R] /Count 3 >>"
     objects[3] = (
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R "
@@ -107,9 +122,19 @@ def build():
         b"/Annots [13 0 R 14 0 R 15 0 R] >>"
     )
 
-    for num, lines in ((5, page1_lines), (6, page2_lines)):
-        stream = text_block(lines, TOP)
+    footer = text_block([PAGE2_FOOTER], FOOTER_Y)
+    for num, stream in (
+        (5, text_block(page1_lines, TOP)),
+        (6, text_block(page2_lines, TOP) + b"\n" + footer),
+        (17, text_block(page3_lines, TOP)),
+    ):
         objects[num] = b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream)
+
+    # Page 3 has no bookmark: it continues the Results section.
+    objects[16] = (
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 7 0 R >> >> /Contents 17 0 R >>"
+    )
 
     objects[7] = (
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "

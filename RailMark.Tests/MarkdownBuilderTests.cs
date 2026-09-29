@@ -26,8 +26,9 @@ public class MarkdownBuilderTests
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int, int), string>? images = null,
         string? imageRelDir = null,
-        Dictionary<string, float>? headingPositions = null)
-        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir, headingPositions);
+        Dictionary<string, float>? headingPositions = null,
+        Dictionary<(int, int), int>? markupOffsets = null)
+        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir, headingPositions, markupOffsets);
 
     private static int CountOccurrences(string source, string value)
     {
@@ -67,6 +68,22 @@ public class MarkdownBuilderTests
 
         Assert.Contains("**word two**", md);
         Assert.DoesNotContain("Highlighted:", md);
+    }
+
+    [Fact]
+    public void Highlight_Bolds_The_Occurrence_It_Covers_When_Text_Repeats()
+    {
+        const string text = "Run the test. Then run the test again.";
+        var file = MakeFile([(0, [new HighlightAnnotation { Rects = [new(50, 50, 100, 10)] }])]);
+        var pageTexts = new Dictionary<int, string> { [0] = text };
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the test" };
+        var offsets = new Dictionary<(int, int), int> { [(0, 0)] = text.LastIndexOf("the test", StringComparison.Ordinal) };
+
+        var withOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts, markupOffsets: offsets).Build();
+        var withoutOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts).Build();
+
+        Assert.Contains("> Run the test. Then run **the test** again.", withOffset);
+        Assert.Contains("> Run **the test**. Then run the test again.", withoutOffset);
     }
 
     [Fact]

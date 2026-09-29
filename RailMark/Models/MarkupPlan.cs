@@ -25,6 +25,18 @@ public record MarkupEntry
 
     /// <summary>Defaults to "AI Reviewer" when omitted.</summary>
     public string? Author { get; init; }
+
+    /// <summary>
+    /// 1-based index of the match to mark when the quote occurs more than once on the page,
+    /// counted in reading order among the matches that also satisfy any context given.
+    /// </summary>
+    public int? Occurrence { get; init; }
+
+    /// <summary>Text that must immediately precede the quote, to pick one of several matches.</summary>
+    public string? ContextBefore { get; init; }
+
+    /// <summary>Text that must immediately follow the quote, to pick one of several matches.</summary>
+    public string? ContextAfter { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<MarkupType>))]

@@ -14,7 +14,10 @@ public class MarkdownBuilder
     private readonly Dictionary<int, string>? _pageTexts;
     private readonly Dictionary<(int page, int annotIdx), string>? _images;
     private readonly string? _imageRelDir;
-    private readonly Dictionary<int, (string text, int[] map)> _normPageCache = [];
+    private readonly Dictionary<int, NormalizedText> _normPageCache = [];
+    // Where each text-markup annotation starts in its page's text, when known — used to pick the
+    // right occurrence when the marked text appears more than once on the page.
+    private readonly Dictionary<(int page, int annotIdx), int>? _markupOffsets;
     // Vertical position of each heading on its own page, keyed by HeadingKey. Only populated for
     // headings whose title could be located in the page text; absent means page-level ordering.
     private readonly Dictionary<string, float>? _headingPositions;
@@ -32,7 +35,8 @@ public class MarkdownBuilder
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int page, int annotIdx), string>? images = null,
         string? imageRelDir = null,
-        Dictionary<string, float>? headingPositions = null)
+        Dictionary<string, float>? headingPositions = null,
+        Dictionary<(int page, int annotIdx), int>? markupOffsets = null)
     {
         _annotations = annotations;
         _sourceName = sourceName;
@@ -42,6 +46,7 @@ public class MarkdownBuilder
         _images = images;
         _imageRelDir = imageRelDir;
         _headingPositions = headingPositions;
+        _markupOffsets = markupOffsets;
     }
 
     public string Build()
@@ -300,7 +305,7 @@ public class MarkdownBuilder
                 // The context is page text emitted verbatim, so it still carries the extractor's
                 // invisible de-hyphenation markers. Strip them after the offsets have been used.
                 var bolded = TextLocator.StripInvisibleMarkers(
-                    BoldHighlightInContext(page, pageText, highlightedText));
+                    BoldHighlightInContext(page, annotIdx, pageText, highlightedText));
                 sb.AppendLine($"> {bolded}");
             }
             else
@@ -463,31 +468,25 @@ public class MarkdownBuilder
         return $"*({string.Join(", ", parts)})*";
     }
 
-    private string BoldHighlightInContext(int page, string pageText, string highlightText)
+    private string BoldHighlightInContext(int page, int annotIdx, string pageText, string highlightText)
     {
-        // Tier 1: exact match
-        var idx = pageText.IndexOf(highlightText, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-        {
-            return pageText[..idx]
-                + "**" + pageText.Substring(idx, highlightText.Length) + "**"
-                + pageText[(idx + highlightText.Length)..];
-        }
+        // Normalised matching covers the verbatim case too; cache per page to avoid
+        // O(highlights × pageLen) normalisation.
+        if (!_normPageCache.TryGetValue(page, out var normPage))
+            _normPageCache[page] = normPage = NormalizedText.From(pageText);
 
-        // Tier 2: fuzzy match (normalised whitespace) — cache per page to avoid O(highlights × pageLen)
-        if (!_normPageCache.TryGetValue(page, out var cached))
-            _normPageCache[page] = cached = TextLocator.NormalizeWithMap(pageText);
-        var (normPage, pageMap) = cached;
-        var normHighlight = TextLocator.CleanText(highlightText);
-
-        var normIdx = normPage.IndexOf(normHighlight, StringComparison.OrdinalIgnoreCase);
-        if (normIdx >= 0 && normIdx + normHighlight.Length < pageMap.Length)
+        var matches = TextLocator.FindQuoteMatches(normPage, highlightText);
+        if (matches.Count > 0)
         {
-            var origStart = pageMap[normIdx];
-            var origEnd = pageMap[normIdx + normHighlight.Length];
-            return pageText[..origStart]
-                + "**" + pageText[origStart..origEnd] + "**"
-                + pageText[origEnd..];
+            // The same words can appear several times on a page; bold the occurrence the
+            // annotation actually covers when its position is known.
+            var match = _markupOffsets != null && _markupOffsets.TryGetValue((page, annotIdx), out var offset)
+                ? matches.MinBy(m => Math.Abs(m.CharStart - offset))
+                : matches[0];
+            var end = match.CharStart + match.CharLength;
+            return pageText[..match.CharStart]
+                + "**" + pageText[match.CharStart..end] + "**"
+                + pageText[end..];
         }
 
         // Fall back to just the highlighted text bolded
