@@ -34,6 +34,7 @@ string? markupPlanPath = null;
 bool dryRun = false;
 bool inPlace = false;
 string? replaceAuthor = null;
+bool jsonFormat = false;
 AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
 
 for (int i = 0; i < args.Length; i++)
@@ -75,6 +76,17 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--in-place":
             inPlace = true;
+            break;
+        case "--format" when i + 1 < args.Length:
+            var formatArg = args[++i];
+            switch (formatArg.ToLowerInvariant())
+            {
+                case "json": jsonFormat = true; break;
+                case "markdown" or "md": jsonFormat = false; break;
+                default:
+                    Console.Error.WriteLine($"Error: Unknown --format value: {formatArg} (expected markdown or json)");
+                    return 1;
+            }
             break;
         case "--replace-author" when i + 1 < args.Length:
             replaceAuthor = args[++i];
@@ -129,6 +141,12 @@ if (markupPlanPath != null && (exportMode || colorArg != null || includeImages |
     return 1;
 }
 
+if (jsonFormat && (exportMode || markupPlanPath != null))
+{
+    Console.Error.WriteLine("Error: --format json applies to annotation extraction only; it cannot be combined with --export or --apply-markup.");
+    return 1;
+}
+
 if (dryRun && markupPlanPath == null)
 {
     Console.Error.WriteLine("Error: --dry-run is only valid with --apply-markup.");
@@ -167,7 +185,7 @@ if (colorArg != null)
 if (!stdoutMode && markupPlanPath == null)
     outputPath ??= exportMode
         ? Path.ChangeExtension(pdfPath, null) + "-export.md"
-        : Path.ChangeExtension(pdfPath, null) + "-annotations.md";
+        : Path.ChangeExtension(pdfPath, null) + (jsonFormat ? "-annotations.json" : "-annotations.md");
 
 // Initialise PDFium native library
 PdfiumResolver.Initialize();
@@ -354,6 +372,8 @@ catch (Exception ex)
 if (annotationFile == null || !annotationFile.Pages.Any(p => p.Value.Count > 0))
 {
     Console.Error.WriteLine("No annotations found. Nothing to export.");
+    // A consumer parsing JSON should get an empty result, not nothing at all.
+    if (jsonFormat) WriteOutput(EmptyJson(pdfPath));
     return 0;
 }
 
@@ -375,6 +395,7 @@ Console.Error.WriteLine($"Found {totalAnnotations} annotations across {annotatio
 if (totalAnnotations == 0)
 {
     Console.Error.WriteLine("No annotations found after filtering. Nothing to export.");
+    if (jsonFormat) WriteOutput(EmptyJson(pdfPath));
     return 0;
 }
 
@@ -445,30 +466,33 @@ if (includeImages)
     Console.Error.WriteLine($"Cropped {images.Count} annotation images.");
 }
 
-var builder = new MarkdownBuilder(
-    annotationFile,
-    Path.GetFileName(pdfPath),
-    pdf.Outline,
-    highlightTexts,
-    pageTexts,
-    images,
-    imageRelDir,
-    headingPositions,
-    markupOffsets);
+var output = jsonFormat
+    ? new AnnotationJsonBuilder(
+        annotationFile, Path.GetFileName(pdfPath), pdf.Outline, highlightTexts, pageTexts,
+        images, imageRelDir, headingPositions, markupOffsets).Build()
+    : new MarkdownBuilder(
+        annotationFile, Path.GetFileName(pdfPath), pdf.Outline, highlightTexts, pageTexts,
+        images, imageRelDir, headingPositions, markupOffsets).Build();
 
-var markdown = builder.Build();
-
-if (stdoutMode)
-    Console.Write(markdown);
-else
-{
-    File.WriteAllText(outputPath!, markdown);
-    Console.Error.WriteLine($"Written to: {outputPath}");
-}
+WriteOutput(output);
 
 return 0;
 
 // --- Helpers ---
+
+void WriteOutput(string content)
+{
+    if (stdoutMode)
+        Console.Write(content);
+    else
+    {
+        File.WriteAllText(outputPath!, content);
+        Console.Error.WriteLine($"Written to: {outputPath}");
+    }
+}
+
+static string EmptyJson(string pdfPath)
+    => new AnnotationJsonBuilder(new AnnotationFile(), Path.GetFileName(pdfPath), []).Build();
 
 /// <summary>
 /// The rect to pull text from for a text-markup annotation. Highlights and strikeouts are drawn
@@ -649,6 +673,10 @@ static void PrintUsage()
           --pages <range>      Only include annotations from these pages (e.g. "1,3,5-10")
           --color <hex>        Filter by annotation colour (e.g. "#FF0000" or "ff0000,ffcc00")
           --images             Include cropped screenshots for rect/freehand annotations
+          --format <markdown|json>
+                               Annotation-mode output format (default: markdown). json emits
+                               one record per annotation, shaped like a markup-plan entry
+                               (default output: <pdf-stem>-annotations.json)
           --export             Export full document to Markdown (layout-aware, includes annotations)
           --no-vlm             Disable VLM transcription (with --export)
           --vlm-endpoint <url> Override VLM endpoint URL (with --export)

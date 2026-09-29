@@ -311,6 +311,48 @@ check   "only the new round and the fixture's own remain" "${WORK}/round2.md" "*
 check   "new round present"  "${WORK}/round2.md" "round two"
 nocheck "old round gone"     "${WORK}/round2.md" "second round"
 
+# --- 8. JSON extraction --------------------------------------------------------
+echo ""
+section "--format json"
+"${RAILMARK[@]}" "${WORK}/idem1.pdf" --format json -o - > "${WORK}/idem1.ann.json" 2>/dev/null
+J="${WORK}/idem1.ann.json"
+jcheck "every annotation extracted"      "$J" '.annotations | length == 10'
+jcheck "source named"                    "$J" '.source == "idem1.pdf"'
+jcheck "authored markup has ids"         "$J" '[.annotations[] | select(.author == "AI Reviewer") | .id] | all(type == "string" and length > 0)'
+jcheck "highlight quote across wrap"     "$J" 'any(.annotations[]; .type == "highlight" and .quote == "interpretable in practice" and .comment == "first round")'
+jcheck "note body as comment"            "$J" 'any(.annotations[]; .type == "note" and .comment == "How many samples?")'
+jcheck "replace record"                  "$J" 'any(.annotations[]; .type == "replace" and .replacement == "modest" and .quote == "small but consistent")'
+jcheck "heading from position"           "$J" 'any(.annotations[]; .quote == "paragraph sits under" and .heading == "Methods")'
+jcheck "1-based pages"                   "$J" '[.annotations[].page] | min == 1 and max == 2'
+jcheck "reading order"                   "$J" '[.annotations[].page] | . == sort'
+
+# Records are shaped like plan entries: turn the extracted markup straight back
+# into a plan, and re-applying it must find every annotation already there.
+jq '{entries: [.annotations[] | select(.quote != null) | {page, quote, type, comment, replacement, color, author, occurrence}]}' \
+    "$J" > "${WORK}/roundtrip.json"
+"${RAILMARK[@]}" "${WORK}/idem1.pdf" --apply-markup "${WORK}/roundtrip.json" --dry-run > "${WORK}/roundtrip.out" 2>/dev/null
+jcheck "extracted records re-apply as a plan" "${WORK}/roundtrip.out" 'length == 5 and all(.[]; .success and .action == "unchanged")'
+
+# The highlight in occ.pdf sits on the second of two matches; the record must
+# say so, and feeding it back must hit that same match.
+"${RAILMARK[@]}" "${WORK}/occ.pdf" --format json -o - > "${WORK}/occ.ann.json" 2>/dev/null
+jcheck "occurrence recorded for a repeated quote" "${WORK}/occ.ann.json" 'any(.annotations[]; .type == "highlight" and .occurrence == 2)'
+jq '{entries: [.annotations[] | select(.type == "highlight") | {page, quote, type, author, occurrence}]}' \
+    "${WORK}/occ.ann.json" > "${WORK}/occ-rt.json"
+"${RAILMARK[@]}" "${WORK}/occ.pdf" --apply-markup "${WORK}/occ-rt.json" --dry-run > "${WORK}/occ-rt.out" 2>/dev/null
+jcheck "occurrence round-trips to the same match" "${WORK}/occ-rt.out" '.[0].action == "unchanged"'
+
+# An empty result is still valid JSON.
+"${RAILMARK[@]}" "$FIXTURE" --format json --pages 3 -o - > "${WORK}/empty.json" 2>/dev/null
+jcheck "empty result is an empty array" "${WORK}/empty.json" '.annotations == []'
+
+if "${RAILMARK[@]}" "$FIXTURE" --format json --export -o - > /dev/null 2>&1; then
+    echo "  FAIL --format json --export should be rejected" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   --format json rejected with --export"
+fi
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2
