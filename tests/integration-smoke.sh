@@ -61,12 +61,18 @@ nocheck() {
     fi
 }
 
+section_no=0
+section() {
+    section_no=$((section_no + 1))
+    echo "[${section_no}] $1"
+}
+
 echo "Fixture:  ${FIXTURE}"
 echo "Command:  ${RAILMARK[*]}"
 echo ""
 
 # --- 1. Export -------------------------------------------------------------
-echo "[1/5] --export"
+section "--export"
 "${RAILMARK[@]}" "$FIXTURE" --export --no-vlm -o "${WORK}/export.md" > /dev/null
 
 check "heading Introduction"   "${WORK}/export.md" "Introduction"
@@ -91,7 +97,7 @@ fi
 # Each quote is written the way an AI agent would write it, not the way the PDF
 # stores it: across a wrap hyphen, and with straight quotes for curly ones.
 echo ""
-echo "[2/5] --apply-markup"
+section "--apply-markup"
 cat > "${WORK}/plan.json" <<'PLAN'
 {"entries":[
  {"page":1,"quote":"interpretable in practice","type":"highlight","comment":"spans a wrap hyphen"},
@@ -118,7 +124,7 @@ check "wrap-hyphen highlight spans 2 lines" "${WORK}/apply.json" '"spanCount":2'
 
 # --- 3. Extract the annotations back ---------------------------------------
 echo ""
-echo "[3/5] annotation extraction"
+section "annotation extraction"
 "${RAILMARK[@]}" "${WORK}/marked.pdf" -o "${WORK}/annots.md" > /dev/null
 
 # The fixture ships 4 annotations of its own (a square and three ink strokes),
@@ -157,7 +163,7 @@ fi
 # The fixture carries a /Square over the "Introduction" heading and three /Ink
 # strokes on page 2 — two within the 50pt merge distance, one far away.
 echo ""
-echo "[4/5] --images"
+section "--images"
 "${RAILMARK[@]}" "$FIXTURE" --images -o "${WORK}/shots.md" > /dev/null
 
 shot_dir="${WORK}/shots-images"
@@ -201,7 +207,7 @@ fi
 # "run of the experiment" occurs twice on page 2. An entry that doesn't say
 # which one it means must be flagged, and one that does must land on it.
 echo ""
-echo "[5/5] occurrence and context"
+section "occurrence and context"
 cat > "${WORK}/occ.json" <<'PLAN'
 {"entries":[
  {"page":2,"quote":"run of the experiment","type":"highlight","occurrence":2},
@@ -239,6 +245,26 @@ jcheck "report omits context when not a dry run" "${WORK}/occ.json.out" 'all(.[]
 "${RAILMARK[@]}" "${WORK}/occ.pdf" -o "${WORK}/occ.md" > /dev/null 2>&1
 check   "highlight landed on the second occurrence" "${WORK}/occ.md" "A second **run of the experiment** repeated"
 nocheck "first occurrence not bolded"               "${WORK}/occ.md" "every **run of the experiment**"
+
+# --- 6. Suggested replacement ------------------------------------------------
+# PDFium can't create the caret Acrobat pairs with a strikeout, so a replacement
+# is a strikeout tagged via /Subj. That tag has to survive a real write + read.
+echo ""
+section "replace"
+cat > "${WORK}/replace.json" <<'PLAN'
+{"entries":[
+ {"page":2,"quote":"small but consistent","type":"replace","replacement":"modest but reliable","comment":"Plainer wording."},
+ {"page":2,"quote":"No attempt","type":"strikeout"}
+]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/replace.json" -o "${WORK}/replace.pdf" > "${WORK}/replace.out" 2>/dev/null
+jcheck "replace entry resolved"   "${WORK}/replace.out" '.[0].success and .[0].type == "Replace"'
+"${RAILMARK[@]}" "${WORK}/replace.pdf" -o "${WORK}/replace.md" > /dev/null 2>&1
+check  "replacement rendered"      "${WORK}/replace.md" "~~small but consistent~~ → **modest but reliable**"
+check  "replacement comment"       "${WORK}/replace.md" "**Comment:** Plainer wording."
+check  "replacement labelled"      "${WORK}/replace.md" "suggested replacement"
+check  "plain strikeout unchanged" "${WORK}/replace.md" "~~No attempt~~"
+nocheck "tag not leaked"           "${WORK}/replace.md" "Replace with:"
 
 echo ""
 if [ "$failures" -ne 0 ]; then

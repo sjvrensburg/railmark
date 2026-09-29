@@ -87,6 +87,27 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Tagged_Strikeout_Renders_As_Suggested_Replacement()
+    {
+        var strike = new StrikeOutAnnotation
+        {
+            Subject = "Replacement",
+            Contents = "Replace with: red fox\n\nColour is wrong.",
+            Rects = [new(50, 50, 100, 10)],
+        };
+        var file = MakeFile([(0, [strike])]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "brown fox" };
+
+        var md = Build(file, [H("Chapter 1", 0)], hlTexts).Build();
+
+        Assert.Contains("> ~~brown fox~~ → **red fox**", md);
+        Assert.Contains("> **Comment:** Colour is wrong.", md);
+        Assert.Contains("suggested replacement", md);
+        Assert.DoesNotContain("suggested deletion", md);
+        Assert.DoesNotContain("Replace with:", md);
+    }
+
+    [Fact]
     public void Highlight_Without_Page_Text_Shows_Bold_Highlight()
     {
         var file = MakeFile([(0, [new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] }])]);

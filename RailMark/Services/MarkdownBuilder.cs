@@ -333,6 +333,22 @@ public class MarkdownBuilder
     {
         var markedText = GetMarkupText(page, annotIdx);
 
+        if (ReplacementMarkup.TryParse(markup, out var replacement, out var replacementComment))
+        {
+            sb.AppendLine(!string.IsNullOrWhiteSpace(markedText)
+                ? $"> ~~{markedText}~~ → **{CleanText(replacement)}**"
+                : $"> Replace with **{CleanText(replacement)}**");
+            if (!string.IsNullOrWhiteSpace(replacementComment))
+            {
+                sb.AppendLine(">");
+                sb.AppendLine($"> **Comment:** {replacementComment}");
+            }
+            sb.AppendLine(">");
+            sb.AppendLine($"> {GetLabel(page, "suggested replacement")}");
+            sb.AppendLine();
+            return;
+        }
+
         var (label, rendered) = markup switch
         {
             StrikeOutAnnotation => ("suggested deletion", $"~~{markedText}~~"),

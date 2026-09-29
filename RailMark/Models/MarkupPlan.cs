@@ -37,6 +37,9 @@ public record MarkupEntry
 
     /// <summary>Text that must immediately follow the quote, to pick one of several matches.</summary>
     public string? ContextAfter { get; init; }
+
+    /// <summary>The text to put in place of the quote. Required for, and only valid with, <see cref="MarkupType.Replace"/>.</summary>
+    public string? Replacement { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<MarkupType>))]
@@ -46,5 +49,6 @@ public enum MarkupType
     Underline,
     Strikeout,
     Squiggly,
-    Note
+    Note,
+    Replace
 }

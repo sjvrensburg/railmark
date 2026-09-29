@@ -42,6 +42,9 @@ public static class MarkupPlanService
         [MarkupType.Strikeout] = AnnotationInteractionHandler.AnnotationColors[2], // Red
         [MarkupType.Squiggly] = AnnotationInteractionHandler.AnnotationColors[1],  // Green
         [MarkupType.Note] = AnnotationInteractionHandler.AnnotationColors[0],      // Yellow
+        // Not a RailReader2 tool: blue keeps a suggested replacement visibly distinct from a
+        // plain (red) deletion.
+        [MarkupType.Replace] = AnnotationInteractionHandler.AnnotationColors[3],   // Blue
     };
 
     /// <summary>Where an entry's quote landed: a character range on a 0-based page.</summary>
@@ -83,6 +86,12 @@ public static class MarkupPlanService
             {
                 results[index] = Failure(entry,
                     $"Page {entry.Page} is out of range (document has {pdf.PageCount} pages).");
+                continue;
+            }
+
+            if (Validate(entry) is { } invalid)
+            {
+                results[index] = Failure(entry, invalid);
                 continue;
             }
 
@@ -191,6 +200,16 @@ public static class MarkupPlanService
         return ((candidates[0], all.Count, warning), null);
     }
 
+    /// <summary>Checks the fields that only make sense for some types; null when the entry is valid.</summary>
+    private static string? Validate(MarkupEntry entry)
+    {
+        if (entry.Type == MarkupType.Replace && string.IsNullOrEmpty(entry.Replacement))
+            return "A replace entry needs a non-empty replacement (use strikeout to suggest a deletion).";
+        if (entry.Type != MarkupType.Replace && entry.Replacement != null)
+            return $"replacement is only valid with type replace (this entry is {entry.Type.ToString().ToLowerInvariant()}).";
+        return null;
+    }
+
     private static string Times(int n) => n == 1 ? "once" : $"{n} times";
 
     /// <summary>
@@ -268,13 +287,21 @@ public static class MarkupPlanService
         {
             MarkupType.Highlight => new HighlightAnnotation(),
             MarkupType.Underline => new UnderlineAnnotation(),
-            MarkupType.Strikeout => new StrikeOutAnnotation(),
+            MarkupType.Strikeout or MarkupType.Replace => new StrikeOutAnnotation(),
             MarkupType.Squiggly => new SquigglyAnnotation(),
             _ => throw new ArgumentOutOfRangeException(nameof(entry), entry.Type, "Unhandled markup type."),
         };
 
         annotation.Rects = markupRects;
-        annotation.Contents = entry.Comment;
+        if (entry.Type == MarkupType.Replace)
+        {
+            annotation.Subject = ReplacementMarkup.Subject;
+            annotation.Contents = ReplacementMarkup.FormatContents(entry.Replacement!, entry.Comment);
+        }
+        else
+        {
+            annotation.Contents = entry.Comment;
+        }
         annotation.Color = color;
         annotation.Author = author;
         annotation.Source = AnnotationSource.RailReader;

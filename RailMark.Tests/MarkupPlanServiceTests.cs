@@ -317,9 +317,13 @@ public class MarkupPlanServiceTests
     [InlineData(MarkupType.Strikeout, "#FF0000")]
     [InlineData(MarkupType.Squiggly, "#00A000")]
     [InlineData(MarkupType.Note, "#FFFF00")]
+    [InlineData(MarkupType.Replace, "#0066FF")]
     public void Resolve_Applies_RailReader_Palette_Default_When_Color_Omitted(MarkupType type, string expected)
     {
-        var plan = new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = type }] };
+        var plan = new MarkupPlan
+        {
+            Entries = [new() { Page = 1, Quote = "brown fox", Type = type, Replacement = type == MarkupType.Replace ? "red fox" : null }],
+        };
         var pdf = new FakePdfService(pageCount: 1, pageSize: (600, 800));
         var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." });
 
@@ -480,6 +484,85 @@ public class MarkupPlanServiceTests
         Assert.Equal(2, entry.Occurrence);
         Assert.Equal("We tune", entry.ContextBefore);
         Assert.Equal(".", entry.ContextAfter);
+    }
+
+    // --- Replace ---
+
+    [Theory]
+    [InlineData(null, "Replace with: red fox")]
+    [InlineData("", "Replace with: red fox")]
+    [InlineData("Colour is wrong.", "Replace with: red fox\n\nColour is wrong.")]
+    public void Resolve_Writes_Replace_As_Tagged_Strikeout(string? comment, string expectedContents)
+    {
+        var (file, result) = ResolveOne(
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "red fox", Comment = comment },
+            "The quick brown fox jumps.");
+
+        Assert.True(result.Entries[0].Success);
+        Assert.Equal(MarkupType.Replace, result.Entries[0].Type);
+        var strike = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.Equal("Replacement", strike.Subject);
+        Assert.Equal(expectedContents, strike.Contents);
+        // Full glyph box, like a plain strikeout — not the underline's baseline band.
+        Assert.Equal(10f, strike.Rects[0].H, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Resolve_Fails_Replace_Without_Replacement(string? replacement)
+    {
+        var (file, result) = ResolveOne(
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = replacement },
+            "The quick brown fox jumps.");
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains("non-empty replacement", result.Entries[0].Error);
+        Assert.Empty(file.Pages);
+    }
+
+    [Fact]
+    public void Resolve_Fails_Replacement_On_Another_Type()
+    {
+        var (_, result) = ResolveOne(
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Strikeout, Replacement = "red fox" },
+            "The quick brown fox jumps.");
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains("only valid with type replace", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void MarkupPlan_Deserializes_Replace()
+    {
+        const string json = """{ "entries": [ { "page": 1, "quote": "teh", "type": "replace", "replacement": "the" } ] }""";
+
+        var entry = JsonSerializer.Deserialize<MarkupPlan>(json, JsonOptions)!.Entries[0];
+
+        Assert.Equal(MarkupType.Replace, entry.Type);
+        Assert.Equal("the", entry.Replacement);
+    }
+
+    [Theory]
+    [InlineData("Replace with: the", "the", null)]
+    [InlineData("Replace with: the\n\nTypo.", "the", "Typo.")]
+    [InlineData("Replace with: the\r\n\r\nTypo.", "the", "Typo.")]
+    [InlineData("Replace with: two\nlines\n\nWhy.", "two\nlines", "Why.")]
+    public void ReplacementMarkup_Parses_What_It_Formats(string contents, string replacement, string? comment)
+    {
+        var strike = new StrikeOutAnnotation { Subject = "Replacement", Contents = contents };
+
+        Assert.True(ReplacementMarkup.TryParse(strike, out var parsedReplacement, out var parsedComment));
+        Assert.Equal(replacement, parsedReplacement);
+        Assert.Equal(comment, parsedComment);
+    }
+
+    [Fact]
+    public void ReplacementMarkup_Ignores_Untagged_Or_Other_Annotations()
+    {
+        Assert.False(ReplacementMarkup.TryParse(new StrikeOutAnnotation { Contents = "Replace with: x" }, out _, out _));
+        Assert.False(ReplacementMarkup.TryParse(new StrikeOutAnnotation { Subject = "Replacement", Contents = "x" }, out _, out _));
+        Assert.False(ReplacementMarkup.TryParse(new HighlightAnnotation { Subject = "Replacement", Contents = "Replace with: x" }, out _, out _));
     }
 
     [Fact]
