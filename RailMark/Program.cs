@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RailReader.Core.Models;
@@ -35,6 +36,9 @@ bool dryRun = false;
 bool inPlace = false;
 string? replaceAuthor = null;
 bool jsonFormat = false;
+string? authorArg = null;
+string? excludeAuthorArg = null;
+string? sinceArg = null;
 AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
 
 for (int i = 0; i < args.Length; i++)
@@ -87,6 +91,15 @@ for (int i = 0; i < args.Length; i++)
                     Console.Error.WriteLine($"Error: Unknown --format value: {formatArg} (expected markdown or json)");
                     return 1;
             }
+            break;
+        case "--author" when i + 1 < args.Length:
+            authorArg = args[++i];
+            break;
+        case "--exclude-author" when i + 1 < args.Length:
+            excludeAuthorArg = args[++i];
+            break;
+        case "--since" when i + 1 < args.Length:
+            sinceArg = args[++i];
             break;
         case "--replace-author" when i + 1 < args.Length:
             replaceAuthor = args[++i];
@@ -147,6 +160,23 @@ if (jsonFormat && (exportMode || markupPlanPath != null))
     return 1;
 }
 
+if ((authorArg ?? excludeAuthorArg ?? sinceArg) != null && (exportMode || markupPlanPath != null))
+{
+    Console.Error.WriteLine("Error: --author, --exclude-author and --since apply to annotation extraction only.");
+    return 1;
+}
+
+DateTimeOffset? since = null;
+if (sinceArg != null)
+{
+    if (!DateTimeOffset.TryParse(sinceArg, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsedSince))
+    {
+        Console.Error.WriteLine($"Error: Invalid --since date: {sinceArg} (expected e.g. 2026-09-01 or 2026-09-01T14:30)");
+        return 1;
+    }
+    since = parsedSince;
+}
+
 if (dryRun && markupPlanPath == null)
 {
     Console.Error.WriteLine("Error: --dry-run is only valid with --apply-markup.");
@@ -194,7 +224,8 @@ var factory = new SkiaPdfServiceFactory();
 // --- Apply-markup mode: write AI-authored PDF markup from a JSON plan ---
 if (markupPlanPath != null)
 {
-    if (!File.Exists(markupPlanPath))
+    bool planFromStdin = markupPlanPath == "-";
+    if (!planFromStdin && !File.Exists(markupPlanPath))
     {
         Console.Error.WriteLine($"Error: Markup plan not found: {markupPlanPath}");
         return 1;
@@ -203,7 +234,9 @@ if (markupPlanPath != null)
     MarkupPlan plan;
     try
     {
-        var planJson = await File.ReadAllTextAsync(markupPlanPath);
+        var planJson = planFromStdin
+            ? await Console.In.ReadToEndAsync()
+            : await File.ReadAllTextAsync(markupPlanPath);
         var jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -385,7 +418,20 @@ if (pagesArg != null)
 
 // Apply colour filter
 if (colorFilter != null)
-    annotationFile = FilterAnnotations(annotationFile, a => colorFilter.Contains(NormalizeColor(a.Color)));
+    annotationFile = AnnotationFilter.Where(annotationFile, a => colorFilter.Contains(NormalizeColor(a.Color)));
+
+// Apply author and date filters
+if (authorArg != null || excludeAuthorArg != null)
+    annotationFile = AnnotationFilter.ByAuthor(annotationFile,
+        authorArg is null ? null : SplitList(authorArg),
+        excludeAuthorArg is null ? null : SplitList(excludeAuthorArg));
+
+if (since is { } sinceDate)
+{
+    annotationFile = AnnotationFilter.Since(annotationFile, sinceDate, out var undated);
+    if (undated > 0)
+        Console.Error.WriteLine($"Note: --since excluded {undated} annotation(s) that carry no date.");
+}
 
 int totalAnnotations = annotationFile.Pages.Values.Sum(p => p.Count);
 Console.Error.WriteLine($"Found {totalAnnotations} annotations across {annotationFile.Pages.Count} pages.");
@@ -611,20 +657,8 @@ static AnnotationFile FilterPages(AnnotationFile src, Func<int, List<Annotation>
     return dst;
 }
 
-static AnnotationFile FilterAnnotations(AnnotationFile src, Func<Annotation, bool> pred)
-{
-    var dst = new AnnotationFile
-    {
-        Version = src.Version, SourcePdf = src.SourcePdf,
-        SourcePdfPath = src.SourcePdfPath, Bookmarks = src.Bookmarks,
-    };
-    foreach (var (k, v) in src.Pages)
-    {
-        var filtered = v.Where(pred).ToList();
-        if (filtered.Count > 0) dst.Pages[k] = filtered;
-    }
-    return dst;
-}
+static string[] SplitList(string input)
+    => input.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
 static HashSet<string>? ParseColorFilter(string input)
 {
@@ -677,6 +711,14 @@ static void PrintUsage()
           -o <path>            Output file (default: <pdf-stem>-annotations.md). Use - for stdout
           --pages <range>      Only include annotations from these pages (e.g. "1,3,5-10")
           --color <hex>        Filter by annotation colour (e.g. "#FF0000" or "ff0000,ffcc00")
+          --author <names>     Only include annotations by these authors (comma-separated,
+                               case-insensitive)
+          --exclude-author <names>
+                               Leave out annotations by these authors (e.g. "AI Reviewer" to
+                               see only the human markup)
+          --since <date>       Only include annotations created or last modified on or after
+                               <date> (e.g. 2026-09-01 or 2026-09-01T14:30; local time unless
+                               an offset is given). Annotations without a date are left out
           --images             Include cropped screenshots for rect/freehand annotations
           --format <markdown|json>
                                Annotation-mode output format (default: markdown). json emits
@@ -692,8 +734,9 @@ static void PrintUsage()
                                gpu opportunistically uses a native WebGPU execution provider
                                and falls back to cpu if no device is available.
           --apply-markup <plan.json>
-                               Write PDF markup (highlight/underline/strikeout/note) from a
-                               JSON markup plan into a new PDF (default: <pdf-stem>-marked.pdf,
+                               Write PDF markup (highlight/underline/strikeout/squiggly/
+                               replace/note) from a JSON markup plan (- reads it from stdin)
+                               into a new PDF (default: <pdf-stem>-marked.pdf,
                                or -o <path>). The input PDF is never modified unless --in-place
                                is given. Reports per-entry results as JSON on stdout.
           --in-place           With --apply-markup, write annotations directly into the input
@@ -703,7 +746,8 @@ static void PrintUsage()
                                by <name> — to revise an earlier round of markup rather than
                                add to it. (Re-applying a plan never duplicates identical
                                markup either way.)
-          --dry-run            With --apply-markup, resolve and report only; do not write
+          --dry-run            With --apply-markup, resolve and report only; do not write.
+                               The report then also shows the text around each match
           --version            Show the railmark version
           -h, --help           Show this help
         """);

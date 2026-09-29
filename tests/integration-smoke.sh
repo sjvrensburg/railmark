@@ -427,6 +427,35 @@ fi
 "${RAILMARK[@]}" "${WORK}/replied.pdf" --apply-markup "${WORK}/reply.json" --dry-run > "${WORK}/reply2.out" 2>/dev/null
 jcheck "re-applying replies is unchanged" "${WORK}/reply2.out" 'all(.[]; .action == "unchanged")'
 
+# --- 11. Stdin plans and extraction filters -------------------------------------
+echo ""
+section "stdin plan and filters"
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup - --dry-run < "${WORK}/plan.json" > "${WORK}/stdin.out" 2>/dev/null
+jcheck "plan read from stdin" "${WORK}/stdin.out" 'length == 4 and all(.[]; .success)'
+
+# replied.pdf holds the fixture's own 4 (author "fixture", undated), one
+# "Human" highlight and two "AI Reviewer" replies.
+R="${WORK}/replied.pdf"
+"${RAILMARK[@]}" "$R" --format json --author human -o - > "${WORK}/f1.json" 2>/dev/null
+jcheck "--author keeps only that author" "${WORK}/f1.json" '[.annotations[].author] == ["Human"]'
+"${RAILMARK[@]}" "$R" --format json --exclude-author "AI Reviewer" -o - > "${WORK}/f2.json" 2>/dev/null
+jcheck "--exclude-author drops the AI markup" "${WORK}/f2.json" \
+    '(.annotations | length == 5) and all(.annotations[]; .author != "AI Reviewer")'
+"${RAILMARK[@]}" "$R" --format json --since 2000-01-01 -o - > "${WORK}/f3.json" 2> "${WORK}/f3.err"
+jcheck "--since keeps dated annotations" "${WORK}/f3.json" '(.annotations | length == 3) and all(.annotations[]; .modified != null)'
+check  "--since reports undated exclusions" "${WORK}/f3.err" "excluded 4 annotation(s) that carry no date"
+"${RAILMARK[@]}" "$R" --format json --since 2999-01-01 -o - > "${WORK}/f4.json" 2>/dev/null
+jcheck "--since in the future leaves nothing" "${WORK}/f4.json" '.annotations == []'
+"${RAILMARK[@]}" "$R" --author human -o "${WORK}/f5.md" > /dev/null 2>&1
+check "filters apply to Markdown too" "${WORK}/f5.md" "**1 annotations**"
+
+if "${RAILMARK[@]}" "$R" --since yesterday-ish -o - > /dev/null 2>&1; then
+    echo "  FAIL an unparseable --since date should be rejected" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   unparseable --since rejected"
+fi
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2
