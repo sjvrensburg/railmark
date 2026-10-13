@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,6 +15,7 @@
   --ink: #000000;
   --ink-soft: #4a4a4a;
   --rule: #d4d4d4;
+  --edge: #b8b8b8;
   --desk: #ececec;
   --yellow: #ffff00;
   --green: #00a000;
@@ -23,7 +24,7 @@
   --sans: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui, sans-serif;
   --mono: "Atkinson Hyperlegible Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
-  --measure: 68ch;
+  --measure: 66ch;
   --gutter: 16px;
 }
 * { box-sizing: border-box; }
@@ -40,12 +41,7 @@ a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 0
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 code, pre, kbd { font-family: var(--mono); font-size: 0.92em; }
-pre {
-  margin: 0;
-  overflow-x: auto;
-  line-height: 1.5;
-  tab-size: 2;
-}
+pre { margin: 0; overflow-x: auto; line-height: 1.5; tab-size: 2; }
 h1, h2, h3 { font-weight: 700; line-height: 1.15; margin: 0; letter-spacing: -0.01em; }
 h2 { font-size: 1.75rem; }
 h3 { font-size: 1.125rem; }
@@ -66,29 +62,23 @@ li { margin-bottom: 0.4em; }
 
 /* Hero */
 .hero { padding: 3rem 0 2.5rem; }
-.hero h1 {
-  font-size: clamp(2.1rem, 5.2vw, 3.6rem);
-  max-width: 20ch;
-  margin-bottom: 1rem;
-}
-.hero .lede { font-size: 1.2rem; max-width: 58ch; color: var(--ink); margin-bottom: 1.5rem; }
+.hero h1 { font-size: clamp(2.1rem, 5.2vw, 3.6rem); max-width: 20ch; margin-bottom: 1rem; }
+.hero .lede { font-size: 1.2rem; max-width: 56ch; margin-bottom: 1.5rem; }
 .actions { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; margin-bottom: 2.5rem; }
 .btn {
   display: inline-block; padding: 0.6rem 1.1rem; border: 2px solid var(--ink);
   color: var(--ink); background: var(--paper); text-decoration: none; font-weight: 500; border-radius: 4px;
 }
 .btn:hover { background: var(--ink); color: var(--paper); text-decoration: none; }
-.actions .quiet { font-size: 0.95rem; color: var(--ink-soft); }
 
 /* Round-trip demo */
 .demo {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem;
-  background: var(--desk); padding: 1.5rem; border-radius: 6px;
+  background: var(--desk); padding: 1.5rem;
 }
 .demo-caption { grid-column: 1 / -1; font-size: 0.95rem; color: var(--ink-soft); margin: 0; max-width: none; }
-.demo-caption code { font-size: 0.9em; }
 .sheet {
-  background: var(--paper); padding: 2rem 2.25rem 2rem 2rem; box-shadow: 0 1px 2px rgba(0,0,0,.18);
+  background: var(--paper); border: 1px solid var(--edge); padding: 2rem 2.25rem 2rem 2rem;
   font-family: var(--serif); font-size: 1rem; line-height: 1.55; position: relative; min-width: 0;
 }
 .sheet h3 { font-family: var(--serif); font-size: 1.25rem; font-weight: 600; margin: 0 0 0.5rem; }
@@ -98,7 +88,7 @@ li { margin-bottom: 0.4em; }
 .sheet .pgno.p2 { bottom: 0.6rem; }
 .sheet hr { border: 0; border-top: 1px dashed var(--rule); margin: 1.25rem 0; }
 .sheet .cmt {
-  font-family: var(--sans); font-size: 0.8rem; line-height: 1.35; color: var(--ink);
+  font-family: var(--sans); font-size: 0.8rem; line-height: 1.35;
   border-left: 3px solid var(--blue); padding: 0.15rem 0 0.15rem 0.55rem; margin: 0.4rem 0 0.9rem;
 }
 .sheet .cmt b { color: var(--blue); font-weight: 700; }
@@ -109,15 +99,15 @@ mark {
 .ul { background: linear-gradient(var(--green), var(--green)) no-repeat 0 100% / 0% 2px; padding-bottom: 1px; }
 .so { background: linear-gradient(var(--red), var(--red)) no-repeat 0 55% / 0% 2px; }
 .ins { color: var(--blue); font-style: italic; }
-.ready mark { animation: sweep 0.45s ease-out 0.4s forwards; }
 .sheet .cmt, .sheet .ins { opacity: 0; }
+.ready mark { animation: sweep 0.45s ease-out 0.4s forwards; }
+.ready .ul { animation: sweepline 0.4s ease-out 1.0s forwards; }
+.ready .so { animation: sweepline 0.4s ease-out 1.5s forwards; }
 .ready .sheet .cmt-1 { animation: appear 0.3s ease-out 0.9s forwards; }
 .ready .sheet .cmt-2 { animation: appear 0.3s ease-out 1.95s forwards; }
 .ready .sheet .cmt-3 { animation: appear 0.3s ease-out 1.45s forwards; }
 .ready .sheet .ins { animation: appear 0.3s ease-out 1.95s forwards; }
 @keyframes sweep { to { background-size: 100% 100%; } }
-.ready .ul { animation: sweepline 0.4s ease-out 1.0s forwards; }
-.ready .so { animation: sweepline 0.4s ease-out 1.5s forwards; }
 @keyframes sweepline { to { background-size: 100% 2px; } }
 @keyframes appear { to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
@@ -127,14 +117,14 @@ mark {
 }
 
 .pane { min-width: 0; display: flex; flex-direction: column; }
-.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid #bdbdbd; }
+.tabs { display: flex; gap: 0.25rem; }
 .tabs button {
   font: inherit; font-family: var(--mono); font-size: 0.85rem; padding: 0.45rem 0.7rem;
-  background: transparent; border: 0; border-bottom: 3px solid transparent; margin-bottom: -1px;
+  background: transparent; border: 1px solid transparent; border-bottom: 0; margin-bottom: -1px;
   color: var(--ink-soft); cursor: pointer;
 }
-.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
-.panel { display: none; background: var(--paper); flex: 1; padding: 1rem 1.1rem; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.tabs button[aria-selected="true"] { color: var(--ink); background: var(--paper); border-color: var(--edge); }
+.panel { display: none; background: var(--paper); border: 1px solid var(--edge); flex: 1; padding: 1rem 1.1rem; }
 .panel[data-active] { display: block; }
 .panel pre { font-size: 0.8rem; }
 .panel .k { color: var(--blue); }
@@ -147,32 +137,28 @@ section > .wrap > h2 { margin-bottom: 0.5rem; }
 section .intro { max-width: var(--measure); margin-bottom: 2rem; }
 
 .modes { display: grid; gap: 2.5rem; }
-.mode { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 1.5rem 3rem; align-items: start; }
+.mode { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 1.25rem 3rem; align-items: start; }
 .mode h3 { margin-bottom: 0.5rem; }
-.mode .cmd {
-  grid-column: 1 / -1; background: var(--ink); color: var(--paper); padding: 0.75rem 1rem; border-radius: 4px;
-}
+.mode .cmd { grid-column: 1 / -1; background: var(--ink); color: var(--paper); padding: 0.75rem 1rem; }
 .mode .cmd pre { font-size: 0.9rem; }
 .mode .out { border-left: 3px solid var(--rule); padding-left: 1rem; min-width: 0; }
+.mode .out p { font-size: 0.95rem; margin-bottom: 0.5rem; }
 .mode .out pre { font-size: 0.8rem; }
-.mode .out .sample { color: var(--ink-soft); font-size: 0.85rem; margin: 0 0 0.5rem; }
 
 .steps { counter-reset: step; list-style: none; padding: 0; max-width: var(--measure); }
-.steps li {
-  counter-increment: step; position: relative; padding-left: 2.6rem; margin-bottom: 1.1rem;
-}
+.steps li { counter-increment: step; position: relative; padding-left: 2.6rem; margin-bottom: 1.1rem; }
 .steps li::before {
   content: counter(step); position: absolute; left: 0; top: 0.1em;
   width: 1.8rem; height: 1.8rem; border: 2px solid var(--ink); border-radius: 50%;
   display: grid; place-items: center; font-weight: 700; font-size: 0.9rem;
 }
-.prompt { background: var(--desk); padding: 0.9rem 1.1rem; border-radius: 4px; max-width: var(--measure); margin: 0 0 1.5rem; }
+.prompt { background: var(--desk); padding: 0.9rem 1.1rem; max-width: var(--measure); margin: 0 0 1.5rem; }
 .prompt pre { white-space: pre-wrap; word-break: break-all; font-size: 0.85rem; }
 
-.install-cmd { display: flex; align-items: stretch; gap: 0; max-width: var(--measure); margin-bottom: 0.5rem; }
-.install-cmd pre { flex: 1; background: var(--ink); color: var(--paper); padding: 0.75rem 1rem; border-radius: 4px 0 0 4px; font-size: 0.9rem; }
+.install-cmd { display: flex; align-items: stretch; max-width: var(--measure); margin-bottom: 0.5rem; }
+.install-cmd pre { flex: 1; background: var(--ink); color: var(--paper); padding: 0.75rem 1rem; font-size: 0.9rem; }
 .install-cmd button {
-  font: inherit; font-size: 0.9rem; font-weight: 500; padding: 0 1rem; border: 0; border-radius: 0 4px 4px 0;
+  font: inherit; font-size: 0.9rem; font-weight: 500; padding: 0 1rem; border: 0;
   background: var(--yellow); color: var(--ink); cursor: pointer; min-width: 5.5rem;
 }
 .install-cmd button:hover { filter: brightness(0.92); }
@@ -182,7 +168,7 @@ th { font-weight: 700; }
 td code { white-space: nowrap; }
 details { max-width: var(--measure); margin-bottom: 1rem; }
 summary { cursor: pointer; font-weight: 500; }
-details pre { background: var(--desk); padding: 0.75rem 1rem; border-radius: 4px; margin: 0.75rem 0; font-size: 0.85rem; }
+details pre { background: var(--desk); padding: 0.75rem 1rem; margin: 0.75rem 0; font-size: 0.85rem; }
 
 footer { border-top: 1px solid var(--rule); padding: 2rem 0 3rem; font-size: 0.95rem; color: var(--ink-soft); }
 footer p { max-width: var(--measure); }
@@ -195,8 +181,7 @@ footer p { max-width: var(--measure); }
 }
 @media (max-width: 480px) {
   .install-cmd { flex-direction: column; }
-  .install-cmd pre { border-radius: 4px 4px 0 0; }
-  .install-cmd button { border-radius: 0 0 4px 4px; padding: 0.6rem; }
+  .install-cmd button { padding: 0.6rem; }
   th, td { padding-right: 0.5rem; }
 }
 </style>
@@ -215,11 +200,10 @@ footer p { max-width: var(--measure); }
 <main>
 <div class="wrap hero">
   <h1>PDF review markup, in both directions.</h1>
-  <p class="lede">RailMark reads the highlights and comments in a PDF out as Markdown or JSON, exports any PDF to layout-aware Markdown, and writes an AI reviewer's markup back in as native PDF annotations. One self-contained binary. Nothing else to install.</p>
+  <p class="lede">Reads the highlights and comments in a PDF out as Markdown or JSON. Exports any PDF to layout-aware Markdown. Writes an AI reviewer's markup back in as native PDF annotations. One self-contained binary.</p>
   <div class="actions">
     <a class="btn" href="#install">Install for Linux or Windows</a>
     <a href="https://github.com/sjvrensburg/railmark/releases">Releases</a>
-    <span class="quiet">MIT licensed</span>
   </div>
 
   <div class="demo" id="demo">
@@ -321,9 +305,7 @@ Applied 3/3 markup entries (3 added).</span></pre>
                   Cite the evaluation."</span>,
       <span class="k">"color"</span>: <span class="s">"#FFFF00"</span>,
       <span class="k">"author"</span>: <span class="s">"AI Reviewer"</span>,
-      <span class="k">"heading"</span>: <span class="s">"Introduction"</span>,
-      <span class="k">"created"</span>: <span class="s">"2026-10-13T14:54:11+02:00"</span>,
-      <span class="k">"modified"</span>: <span class="s">"2026-10-13T14:54:11+02:00"</span>
+      <span class="k">"heading"</span>: <span class="s">"Introduction"</span>
     },
     {
       <span class="k">"page"</span>: 2,
@@ -341,26 +323,26 @@ Applied 3/3 markup entries (3 added).</span></pre>
 }</pre>
       </div>
     </div>
-    <p class="demo-caption">The page is <code>tests/fixtures/sample.pdf</code> from the repository with the plan on the right applied to it. The Markdown and JSON are what RailMark reads back out of the marked-up file, abridged to the three entries.</p>
+    <p class="demo-caption">The repository's test fixture with the plan applied. The other tabs are what RailMark reads back out of the marked-up file, abridged.</p>
   </div>
 </div>
 
 <section id="modes">
   <div class="wrap">
     <h2>Three modes, one binary</h2>
-    <p class="intro">Each mode is a flag on the same command. Annotation extraction is the default; the other two are opt-in.</p>
+    <p class="intro">Annotation extraction is the default. The other two are a flag away.</p>
     <div class="modes">
 
       <div class="mode">
         <div class="cmd"><pre>railmark document.pdf -o notes.md</pre></div>
         <div>
           <h3>Read the markup out of a PDF</h3>
-          <p>Extracts every annotation the PDF carries and files it under the document's headings, in reading order, with a summary table at the top. It reads the annotations the file itself holds, so it does not matter which tool wrote them: Acrobat, Preview, Okular, Zotero, Skim, RailReader2 or RailMark.</p>
-          <p>Highlights appear in bold inside their surrounding sentence, on the occurrence that was actually marked. A strikeout reads as a suggested deletion, a caret as a suggested insertion, and the pair as a suggested replacement. Replies thread under the comment they answer. Text artifacts such as ligatures, soft hyphens and words broken by a wrap hyphen are cleaned up.</p>
-          <p>Filter by page, colour, author or date, add cropped screenshots of drawings with <code>--images</code>, or switch to <code>--format json</code> for one record per annotation.</p>
+          <p>Every annotation the file carries, filed under the document's headings in reading order, with a summary table. Whoever wrote it: Acrobat, Preview, Okular, Zotero, Skim, RailReader2 or RailMark.</p>
+          <p>Highlights appear in bold inside their sentence, on the occurrence that was marked. A strikeout reads as a suggested deletion, a caret as an insertion, the pair as a replacement. Replies thread under the comment they answer. Ligatures, soft hyphens and words broken by a wrap hyphen are cleaned up.</p>
+          <p>Filter by page, colour, author or date. Add screenshots of drawings with <code>--images</code>, or get one JSON record per annotation with <code>--format json</code>.</p>
         </div>
         <div class="out">
-          <p class="sample">Filters</p>
+          <p>Filters</p>
 <pre>railmark paper.pdf --pages "1,3,5-10"
 railmark paper.pdf --color "ff0000,ffcc00"
 railmark paper.pdf --exclude-author "AI Reviewer"
@@ -374,11 +356,11 @@ railmark paper.pdf --format json -o -</pre>
         <div class="cmd"><pre>railmark document.pdf --export</pre></div>
         <div>
           <h3>Export any PDF to Markdown</h3>
-          <p>Produces layout-aware Markdown for the whole document, with headings, paragraphs and reading order recovered by the bundled PP-DocLayoutV3 layout model. Figures, tables and equations can be transcribed by a vision model of your choosing through an OpenAI-compatible endpoint, or left as placeholders with <code>--no-vlm</code>.</p>
-          <p>Existing annotations are folded into the export where they occur. This is the mode an AI agent uses to read a document before it drafts a review, because the quotes it sees are the quotes RailMark can later find.</p>
+          <p>Layout-aware Markdown for the whole document, with headings, paragraphs and reading order recovered by the bundled PP-DocLayoutV3 model. Figures, tables and equations can be transcribed by a vision model through any OpenAI-compatible endpoint, or left as placeholders with <code>--no-vlm</code>.</p>
+          <p>Existing annotations are folded in. This is how an agent reads a document before reviewing it, so the quotes it sees are the quotes RailMark can later find.</p>
         </div>
         <div class="out">
-          <p class="sample">Options</p>
+          <p>Options</p>
 <pre>--no-vlm
 --vlm-endpoint &lt;url&gt;
 --vlm-model &lt;name&gt;
@@ -391,12 +373,12 @@ railmark paper.pdf --format json -o -</pre>
         <div class="cmd"><pre>railmark document.pdf --apply-markup plan.json</pre></div>
         <div>
           <h3>Write a reviewer's markup back in</h3>
-          <p>Takes a JSON plan of entries, each naming a page, a verbatim quote, a markup type and an optional comment, and writes real PDF annotations: highlight, underline, strikeout, squiggly, suggested replacement, margin note, or a reply to an existing comment. The quote is matched against the page text with tolerance for whitespace, ligatures, smart quotes and wrap hyphens, then resolved to exact on-page geometry.</p>
-          <p>A quote that repeats on its page is flagged, and the entry can say which occurrence it means. A quote may run from the bottom of one page onto the next. Re-applying a plan never duplicates markup, and <code>--replace-author</code> clears an earlier round first. Every entry reports back as JSON, so a script can see what resolved and retry what did not.</p>
-          <p>The input PDF is copied, never modified, unless you ask for <code>--in-place</code>.</p>
+          <p>A JSON plan lists entries: page, verbatim quote, markup type, optional comment. Each becomes a real PDF annotation: highlight, underline, strikeout, squiggly, suggested replacement, margin note, or a reply to an existing comment. Matching tolerates whitespace, ligatures, smart quotes and wrap hyphens, then resolves the quote to exact page geometry.</p>
+          <p>A repeated quote is flagged, and the entry can say which occurrence it means. A quote may run over a page break. Re-applying a plan never duplicates markup, and <code>--replace-author</code> clears an earlier round. Every entry reports back as JSON, so a script can retry what did not resolve.</p>
+          <p>The input PDF is copied, not modified, unless you ask for <code>--in-place</code>.</p>
         </div>
         <div class="out">
-          <p class="sample">Per-entry report on stdout</p>
+          <p>Report on stdout</p>
 <pre>[
   { "page": 1, "quote": "interpretable in practice",
     "type": "Highlight", "success": true,
@@ -419,33 +401,33 @@ railmark paper.pdf --format json -o -</pre>
 <section id="agents">
   <div class="wrap">
     <h2>For AI agents</h2>
-    <p class="intro">RailMark exists so an agent can act as a technical editor and leave its work where a human reviewer would: in the PDF. A Claude Code skill in the repository teaches the whole loop. Point Claude Code at it and ask for it to be installed; the file carries its own setup instructions for the CLI and the skill, on Linux and Windows.</p>
+    <p class="intro">RailMark exists so an agent can review a document and leave its work where a human reviewer would: in the PDF. A Claude Code skill in the repository teaches the loop. Ask Claude Code to install it; the file carries its own setup instructions for Linux and Windows.</p>
     <div class="prompt"><pre>Install this skill: https://github.com/sjvrensburg/railmark/blob/main/.claude/skills/railmark-markup-plan/SKILL.md</pre></div>
-    <h3>The review loop the skill teaches</h3>
+    <h3>The review loop</h3>
     <ol class="steps">
-      <li><strong>Export the document</strong> with <code>--export</code> and read it. The quotes the agent will use come from this text.</li>
-      <li><strong>Draft a markup plan.</strong> Each entry quotes a passage verbatim, picks highlight, underline, strikeout, squiggly, replace or note, and says why. The skill carries editorial conventions for which to choose.</li>
-      <li><strong>Apply it</strong> with <code>--apply-markup</code>, or check it first with <code>--dry-run</code>, which also shows the text around each match.</li>
-      <li><strong>Retry what did not resolve.</strong> The per-entry report names each failure; the agent fixes the quote or adds context and applies again. Markup already in place is left alone.</li>
+      <li><strong>Export the document</strong> with <code>--export</code> and read it. Quotes come from this text.</li>
+      <li><strong>Draft a plan.</strong> Each entry quotes a passage verbatim, picks a markup type and says why. The skill carries conventions for which type to use.</li>
+      <li><strong>Apply it,</strong> or check it first with <code>--dry-run</code>, which also shows the text around each match.</li>
+      <li><strong>Retry what failed.</strong> The report names each failure; fix the quote or add context and apply again. Markup already in place is left alone.</li>
     </ol>
-    <p>The same records come back out with <code>--format json</code>, shaped like plan entries and carrying an id, so a later round can reply to a human's comment, or a human can answer the agent's in any PDF reader.</p>
+    <p>Records come back out with <code>--format json</code>, shaped like plan entries and carrying an id, so a later round can reply to a human's comment, and a human can answer the agent's in any PDF reader.</p>
   </div>
 </section>
 
 <section id="install">
   <div class="wrap">
     <h2>Install</h2>
-    <p class="intro">Linux, x86-64. This downloads the self-contained AppImage to <code>~/.local/bin/railmark</code>.</p>
+    <p class="intro">Linux x86-64. Downloads the AppImage to <code>~/.local/bin/railmark</code>.</p>
     <div class="install-cmd">
       <pre id="install-line">bash &lt;(curl -fsSL https://raw.githubusercontent.com/sjvrensburg/railmark/main/install.sh)</pre>
       <button type="button" id="copy" aria-label="Copy install command">Copy</button>
     </div>
-    <p>Every <a href="https://github.com/sjvrensburg/railmark/releases">release</a> ships three artifacts. Each bundles the .NET runtime, the native PDF and rendering libraries and the layout model, and each can be checked against the release's <code>SHA256SUMS</code>.</p>
+    <p>Every <a href="https://github.com/sjvrensburg/railmark/releases">release</a> ships three artefacts. Each bundles the .NET runtime, the native libraries and the layout model, and can be checked against the release's <code>SHA256SUMS</code>.</p>
     <table>
-      <thead><tr><th>Artifact</th><th>Platform</th><th>Notes</th></tr></thead>
+      <thead><tr><th>Artefact</th><th>Platform</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td><code>railmark-&lt;version&gt;-linux-x86_64.AppImage</code></td><td>Linux x86-64</td><td>Recommended. A single executable. Needs FUSE, or run it with <code>--appimage-extract-and-run</code>.</td></tr>
-        <tr><td><code>railmark-&lt;version&gt;-linux-x86_64.tar.gz</code></td><td>Linux x86-64</td><td>For containers and images without FUSE. Extract, then run the <code>railmark</code> launcher at the package root.</td></tr>
+        <tr><td><code>railmark-&lt;version&gt;-linux-x86_64.AppImage</code></td><td>Linux x86-64</td><td>Recommended. Needs FUSE, or run with <code>--appimage-extract-and-run</code>.</td></tr>
+        <tr><td><code>railmark-&lt;version&gt;-linux-x86_64.tar.gz</code></td><td>Linux x86-64</td><td>For containers without FUSE. Extract and run the <code>railmark</code> launcher at the root.</td></tr>
         <tr><td><code>railmark-&lt;version&gt;-win-x64.zip</code></td><td>Windows x64</td><td>Extract and run <code>railmark.exe</code>.</td></tr>
       </tbody>
     </table>
@@ -462,7 +444,6 @@ ln -sf ~/.local/opt/railmark-&lt;version&gt;-linux-x86_64/railmark ~/.local/bin/
 cd railmark
 dotnet build
 dotnet run --project RailMark/ -- document.pdf -o notes.md</pre>
-      <p>The repository's README covers building the release artifacts and the layout model download.</p>
     </details>
   </div>
 </section>
@@ -470,7 +451,7 @@ dotnet run --project RailMark/ -- document.pdf -o notes.md</pre>
 
 <footer>
   <div class="wrap">
-    <p>RailMark is MIT licensed and built on the <a href="https://github.com/sjvrensburg/RailReaderCore">RailReader.Core</a> libraries that power <a href="https://github.com/sjvrensburg/railreader2">RailReader2</a>, a PDF viewer for reading at high magnification. Several of the text-handling heuristics in annotation mode were adapted from <a href="https://github.com/0xabu/pdfannots">pdfannots</a> by Andrew Baumann.</p>
+    <p>MIT licence. Built on <a href="https://github.com/sjvrensburg/RailReaderCore">RailReader.Core</a>, the library behind <a href="https://github.com/sjvrensburg/railreader2">RailReader2</a>, a PDF viewer for reading at high magnification. Several annotation-mode heuristics were adapted from <a href="https://github.com/0xabu/pdfannots">pdfannots</a> by Andrew Baumann.</p>
     <p><a href="https://github.com/sjvrensburg/railmark">Source and issues on GitHub</a></p>
   </div>
 </footer>
