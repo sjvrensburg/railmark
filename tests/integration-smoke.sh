@@ -411,6 +411,18 @@ jcheck "both notes added" "${WORK}/twonotes.out" 'all(.[]; .action == "added")'
 jcheck "both notes in the PDF" "${WORK}/twonotes.ann.json" '[.annotations[] | select(.type == "note") | .comment] | sort == ["First issue.", "Second issue."]'
 "${RAILMARK[@]}" "${WORK}/twonotes.pdf" --apply-markup "${WORK}/twonotes.json" --dry-run > "${WORK}/twonotes2.out" 2>/dev/null
 jcheck "both notes found on re-apply" "${WORK}/twonotes2.out" 'all(.[]; .action == "unchanged")'
+# PDFium writes each note as a 24pt square /Rect; the raw PDF is the only place to read it back.
+# Both icons sit just right of the text column (x≈452 on the fixture), not at the page edge, and
+# the second is pushed below the first rather than onto it.
+grep -ao '/Rect\[[^]]*\]/Subtype/Text' "${WORK}/twonotes.pdf" | sed 's#/Rect\[ *##; s#\]/Subtype/Text##' > "${WORK}/twonotes.rects"
+if [ "$(wc -l < "${WORK}/twonotes.rects")" = 2 ] \
+   && awk '{ if ($1 < 452 || $1 > 470) exit 1 }' "${WORK}/twonotes.rects" \
+   && awk 'NR == 1 { x = $1; y = $2 } NR == 2 { dx = $1 - x; if (dx < -1 || dx > 1) exit 1; d = y - $2; if (d < 0) d = -d; if (d < 24) exit 1 }' "${WORK}/twonotes.rects"; then
+    echo "  ok   notes sit beside the text column, stacked apart"
+else
+    echo "  FAIL notes sit beside the text column, stacked apart — rects: $(tr '\n' ';' < "${WORK}/twonotes.rects")" >&2
+    failures=$((failures + 1))
+fi
 
 # --- 10. Replies -----------------------------------------------------------------
 # PDFium can't write /IRT, so a reply's link to its parent rides in its /NM.
@@ -455,6 +467,21 @@ fi
 
 "${RAILMARK[@]}" "${WORK}/replied.pdf" --apply-markup "${WORK}/reply.json" --dry-run > "${WORK}/reply2.out" 2>/dev/null
 jcheck "re-applying replies is unchanged" "${WORK}/reply2.out" 'all(.[]; .action == "unchanged")'
+
+# A thread stays contiguous: replying to the first of the two stacked notes from section 9 puts
+# the reply right under it and pushes the second note down, so the icons read parent, reply,
+# sibling from the top of the page. (PDF /Rect is bottom-up: a higher y is higher on the page.)
+first_id=$(jq -r '.annotations[] | select(.comment == "First issue.") | .id' "${WORK}/twonotes.ann.json")
+jq -n --arg id "$first_id" '{entries: [{page: 1, type: "note", inReplyTo: $id, comment: "Reply to the first."}]}' > "${WORK}/thread.json"
+"${RAILMARK[@]}" "${WORK}/twonotes.pdf" --apply-markup "${WORK}/thread.json" -o "${WORK}/thread.pdf" > /dev/null 2>&1
+python_free_order=$(grep -ao '/Contents([^)]*)[^>]*/Rect\[[^]]*\]/Subtype/Text' "${WORK}/thread.pdf" \
+    | sed 's#/Contents(\([^)]*\)).*/Rect\[ *\([^ ]*\) *\([^ ]*\).*#\3 \1#' | sort -rn | cut -d' ' -f2- | paste -sd '|')
+if [ "$python_free_order" = "First issue.|Reply to the first.|Second issue." ]; then
+    echo "  ok   reply sits under its parent, sibling pushed down"
+else
+    echo "  FAIL reply sits under its parent, sibling pushed down — got: ${python_free_order}" >&2
+    failures=$((failures + 1))
+fi
 
 # --- 11. Stdin plans and extraction filters -------------------------------------
 echo ""

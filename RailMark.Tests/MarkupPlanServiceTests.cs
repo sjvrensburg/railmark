@@ -22,10 +22,11 @@ public class MarkupPlanServiceTests
         public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize) => throw new NotSupportedException();
     }
 
-    private sealed class FakePdfTextService(Dictionary<int, string> pageTexts) : IPdfTextService
+    private sealed class FakePdfTextService(
+        Dictionary<int, string> pageTexts, Dictionary<int, List<CharBox>>? charBoxes = null) : IPdfTextService
     {
         public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
-            => new(pageTexts.GetValueOrDefault(pageIndex, ""), []);
+            => new(pageTexts.GetValueOrDefault(pageIndex, ""), charBoxes?.GetValueOrDefault(pageIndex) ?? []);
 
         public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex, List<(int CharStart, int CharLength)> ranges, string? password = null)
             => ranges.Select(r => new List<RectF> { new(10f, 20f + r.CharStart, 10f + r.CharLength, 30f + r.CharStart) }).ToList();
@@ -354,17 +355,131 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
-    public void Resolve_Places_Note_At_Right_Margin_Of_Last_Matched_Rect()
+    public void Resolve_Places_Note_Beside_The_Last_Matched_Line()
     {
+        // With no character boxes to find the text column from, the quote's own line stands in:
+        // the icon sits just right of it, centred on the line.
         var plan = new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Note, Comment = "Check this." }] };
         var pdf = new FakePdfService(pageCount: 1, pageSize: (600, 800));
         var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." });
 
         var (file, _) = MarkupPlanService.Resolve(plan, pdf, text);
 
+        // "brown fox" starts at char 10, so the fake line is (10, 30)–(19, 40).
         var note = Assert.IsType<TextNoteAnnotation>(Assert.Single(file.Pages[0]));
-        Assert.Equal(600f - 24f, note.X);
+        Assert.Equal(19f + NotePlacement.Gap, note.X);
+        Assert.Equal(35f - NotePlacement.IconSize / 2, note.Y);
         Assert.Equal("Check this.", note.Text);
+    }
+
+    [Fact]
+    public void Resolve_Places_Note_Just_Outside_The_Text_Column()
+    {
+        // A column of text from x=72 to x=452 around the quoted line: the icon goes beside the
+        // column, not beside the (shorter) quote and not at the page edge.
+        var chars = Enumerable.Range(0, 26).Select(i => new CharBox(i, 72f + i * 14.6f, 30f, 72f + (i + 1) * 14.6f, 40f, 0)).ToList();
+        var (file, _) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Note, Comment = "c" }] },
+            new FakePdfService(1, (612, 792)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." }, new() { [0] = chars }));
+
+        var note = Assert.IsType<TextNoteAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.Equal(72f + 26 * 14.6f + NotePlacement.Gap, note.X, precision: 2);
+    }
+
+    [Fact]
+    public void Resolve_Puts_A_Left_Column_Note_In_The_Left_Margin()
+    {
+        // Two columns, 72–290 and 322–540, with a 32pt gutter the 24pt icon would only just fit
+        // in: the left margin is nearer to the left column than the far side of the right column.
+        var chars = new List<CharBox>();
+        for (int i = 0; i < 26; i++) chars.Add(new CharBox(i, 72f + i * 8.38f, 30f, 72f + (i + 1) * 8.38f, 40f, 0));
+        for (int i = 0; i < 26; i++) chars.Add(new CharBox(26 + i, 322f + i * 8.38f, 30f, 322f + (i + 1) * 8.38f, 40f, 0));
+        var (file, _) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Note, Comment = "c" }] },
+            new FakePdfService(1, (612, 792)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." }, new() { [0] = chars }));
+
+        var note = Assert.IsType<TextNoteAnnotation>(Assert.Single(file.Pages[0]));
+        // The gutter is 32pt: the icon plus clearance on both sides is exactly 32, so it fits there.
+        Assert.Equal(72f + 26 * 8.38f + NotePlacement.Gap, note.X, precision: 2);
+    }
+
+    [Fact]
+    public void Notes_On_One_Line_Stack_Downwards_And_Are_Found_Again_On_Reapply()
+    {
+        var plan = new MarkupPlan
+        {
+            Entries =
+            [
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "First issue." },
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "Second issue." },
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "Third issue." },
+            ],
+        };
+        var pdf = new FakePdfService(1, (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "ab" });
+
+        var (file, result) = MarkupPlanService.Resolve(plan, pdf, text);
+
+        Assert.All(result.Entries, e => Assert.Equal("added", e.Action));
+        var notes = file.Pages[0].OfType<TextNoteAnnotation>().ToList();
+        Assert.Equal([notes[0].Y, notes[0].Y + NotePlacement.Step, notes[0].Y + 2 * NotePlacement.Step], notes.Select(n => n.Y));
+        Assert.All(notes, n => Assert.Equal(notes[0].X, n.X));
+
+        var before = notes.Select(n => (n.X, n.Y)).ToList();
+        var (again, rerun) = MarkupPlanService.Resolve(plan, pdf, text, existing: file);
+        Assert.All(rerun.Entries, e => Assert.Equal("unchanged", e.Action));
+        Assert.Equal(before, again.Pages[0].OfType<TextNoteAnnotation>().Select(n => (n.X, n.Y)));
+    }
+
+    [Fact]
+    public void A_Changed_Note_Updates_The_One_It_Aims_At_Not_Its_Neighbour()
+    {
+        // The fake puts char n on a line 1pt below char n-1, so "a" and "b" are 10pt apart: the
+        // second note overlaps the first and is pushed a full step down — further from where it
+        // aims than the first note is.
+        var plan = new MarkupPlan
+        {
+            Entries =
+            [
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "Same words." },
+                new() { Page = 1, Quote = "b", Type = MarkupType.Note, Comment = "Same words." },
+            ],
+        };
+        var pdf = new FakePdfService(1, (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "a........b" });
+        var (file, _) = MarkupPlanService.Resolve(plan, pdf, text);
+        var notes = file.Pages[0].OfType<TextNoteAnnotation>().ToList();
+        Assert.Equal(2, notes.Count);
+        Assert.Equal(notes[0].Y + NotePlacement.Step, notes[1].Y);
+        var first = notes[0];
+
+        // Recolour only the note on "b" — the one that was pushed down the page.
+        plan.Entries[1] = plan.Entries[1] with { Color = "#FF0000" };
+        var (_, result) = MarkupPlanService.Resolve(plan, pdf, text, existing: file);
+
+        Assert.Equal(["unchanged", "updated"], result.Entries.Select(e => e.Action));
+        Assert.Equal("#FFFF00", first.Color);
+    }
+
+    [Fact]
+    public void A_Note_Placed_By_An_Earlier_Version_At_The_Page_Edge_Is_Still_Recognised()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            // Where the fixed right-margin placement used to put a note on "brown fox".
+            new TextNoteAnnotation { Author = "AI Reviewer", Contents = "old", Color = "#FFFF00", X = 600 - 24, Y = 35 },
+        ];
+        var (file, result) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Note, Comment = "old" }] },
+            new FakePdfService(1, (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps." }),
+            existing);
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Single(file.Pages[0]);
     }
 
     // --- Occurrence / context disambiguation ---
@@ -1027,9 +1142,9 @@ public class MarkupPlanServiceTests
         Assert.Equal("Yes — see Table 2.", note.Text);
         Assert.Equal("parent-1", note.InReplyTo);
         Assert.StartsWith("parent-1#reply-", note.NativeId);
-        Assert.Equal(600f - 24f, note.X);
-        // Parent's last line is centred at 306; the first reply sits one step below it.
-        Assert.Equal(326f, note.Y, precision: 3);
+        // Beside the parent's last line (50–150 wide, centred at y=306), as a note on it would be.
+        Assert.Equal(150f + NotePlacement.Gap, note.X);
+        Assert.Equal(306f - NotePlacement.IconSize / 2, note.Y, precision: 3);
     }
 
     [Fact]
@@ -1041,7 +1156,78 @@ public class MarkupPlanServiceTests
 
         Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
         var notes = file.Pages[0].OfType<TextNoteAnnotation>().ToList();
-        Assert.Equal([326f, 346f], notes.Select(n => n.Y));
+        Assert.Equal([294f, 294f + NotePlacement.Step], notes.Select(n => n.Y));
+    }
+
+    [Fact]
+    public void A_Reply_Pushes_The_Notes_Under_Its_Parent_Down_To_Keep_The_Thread_Together()
+    {
+        // The parent note has two unrelated notes stacked under it (as notes on the same line
+        // are). Each reply takes the slot right under the thread and shoves them further down.
+        var existing = new AnnotationFile();
+        var siblings = new[]
+        {
+            new TextNoteAnnotation { NativeId = "s1", Author = "AI Reviewer", Contents = "second issue", X = 456, Y = 100 + NotePlacement.Step },
+            new TextNoteAnnotation { NativeId = "s2", Author = "AI Reviewer", Contents = "third issue", X = 456, Y = 100 + 2 * NotePlacement.Step },
+        };
+        var elsewhere = new TextNoteAnnotation { NativeId = "far", Author = "AI Reviewer", Contents = "other column", X = 40, Y = 100 + NotePlacement.Step };
+        existing.Pages[0] =
+        [
+            new TextNoteAnnotation { NativeId = "n1", Author = "Human", Contents = "Why?", X = 456, Y = 100 },
+            siblings[0], siblings[1], elsewhere,
+        ];
+
+        var (file, result) = Reply(existing,
+            new MarkupEntry { Page = 1, InReplyTo = "n1", Type = MarkupType.Note, Comment = "Because." },
+            new MarkupEntry { Page = 1, InReplyTo = "n1", Type = MarkupType.Note, Comment = "And also." });
+
+        Assert.All(result.Entries, e => Assert.True(e.Success, e.Error));
+        var column = file.Pages[0].OfType<TextNoteAnnotation>().Where(n => n.X == 456).OrderBy(n => n.Y).ToList();
+        Assert.Equal(["Why?", "Because.", "And also.", "second issue", "third issue"], column.Select(n => n.EffectiveContents));
+        Assert.Equal(Enumerable.Range(0, 5).Select(i => 100f + i * NotePlacement.Step), column.Select(n => n.Y));
+        Assert.Equal(100 + NotePlacement.Step, elsewhere.Y); // a different column of icons is left alone
+    }
+
+    [Fact]
+    public void Pushed_Siblings_Are_Still_Found_On_Reapply()
+    {
+        var pdf = new FakePdfService(1, (600, 800));
+        var text = new FakePdfTextService(new Dictionary<int, string> { [0] = "ab" });
+        var notes = new MarkupPlan
+        {
+            Entries =
+            [
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "First issue." },
+                new() { Page = 1, Quote = "a", Type = MarkupType.Note, Comment = "Second issue." },
+            ],
+        };
+        var (file, _) = MarkupPlanService.Resolve(notes, pdf, text);
+        var parentId = file.Pages[0][0].NativeId = "first";
+        var (_, replied) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 1, InReplyTo = parentId, Type = MarkupType.Note, Comment = "Reply." }] },
+            pdf, text, existing: file);
+        Assert.Equal("added", replied.Entries[0].Action);
+
+        var (_, again) = MarkupPlanService.Resolve(notes, pdf, text, existing: file);
+
+        Assert.All(again.Entries, e => Assert.Equal("unchanged", e.Action));
+        Assert.Equal(3, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void A_Reply_To_A_Note_Sits_Directly_Beneath_It()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] = [new TextNoteAnnotation { NativeId = "n1", Author = "Human", Contents = "Why?", X = 456, Y = 100 }];
+
+        var (file, result) = Reply(existing,
+            new MarkupEntry { Page = 1, InReplyTo = "n1", Type = MarkupType.Note, Comment = "Because." },
+            new MarkupEntry { Page = 1, InReplyTo = "n1", Type = MarkupType.Note, Comment = "And also." });
+
+        Assert.All(result.Entries, e => Assert.True(e.Success, e.Error));
+        var replies = file.Pages[0].OfType<TextNoteAnnotation>().Skip(1).ToList();
+        Assert.All(replies, r => Assert.Equal(456f, r.X));
+        Assert.Equal([100f + NotePlacement.Step, 100f + 2 * NotePlacement.Step], replies.Select(r => r.Y));
     }
 
     [Fact]
