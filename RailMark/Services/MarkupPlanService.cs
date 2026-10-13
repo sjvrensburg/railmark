@@ -51,11 +51,6 @@ public sealed class MarkupPlanApplyResult
 
 public static class MarkupPlanService
 {
-    private const float NoteMarginInset = 24f;
-
-    /// <summary>Vertical step, in points, between successive reply notes beside one annotation.</summary>
-    private const float ReplyStep = 20f;
-
     /// <summary>
     /// How far apart, in points, two annotations' geometry may be and still count as covering the
     /// same text. Geometry round-trips through the PDF's own coordinate space, so an annotation
@@ -113,14 +108,17 @@ public static class MarkupPlanService
     {
         var file = existing ?? new AnnotationFile();
         var removed = replaceAuthor is null ? 0 : RemoveByAuthor(file, replaceAuthor);
-        var pages = new Dictionary<int, NormalizedText>();
-        NormalizedText PageText(int pageIndex)
+        var pages = new Dictionary<int, (NormalizedText Text, IReadOnlyList<CharBox> Chars)>();
+        (NormalizedText Text, IReadOnlyList<CharBox> Chars) Page(int pageIndex)
         {
-            if (!pages.TryGetValue(pageIndex, out var text))
-                pages[pageIndex] = text = NormalizedText.From(
-                    textService.ExtractPageText(pdf.PdfBytes, pageIndex, password).Text);
-            return text;
+            if (!pages.TryGetValue(pageIndex, out var page))
+            {
+                var extracted = textService.ExtractPageText(pdf.PdfBytes, pageIndex, password);
+                pages[pageIndex] = page = (NormalizedText.From(extracted.Text), extracted.CharBoxes ?? []);
+            }
+            return page;
         }
+        NormalizedText PageText(int pageIndex) => Page(pageIndex).Text;
 
         // Pass 1 — locate every quote. Results are indexed by original plan position so the
         // report preserves plan order regardless of how geometry lookups are batched.
@@ -249,17 +247,20 @@ public static class MarkupPlanService
                 geometry[onPage[k].index][onPage[k].part] = MergeLineRects(k < rectLines.Count ? rectLines[k] : []);
         }
 
-        // Pass 3 — build and merge annotations, in plan order. `touched` records which entry put
-        // each annotation in place during this run, to catch two entries contradicting each other.
-        var touched = new Dictionary<Annotation, int>(ReferenceEqualityComparer.Instance);
+        // Pass 3 — build and merge annotations, in plan order. The run state records which entry
+        // put each annotation in place during this run, to catch two entries contradicting each
+        // other. A note is built at its ideal spot — its identity for dedupe — and only moved to
+        // make room for other notes once it is known to be new.
+        var run = new RunState();
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
             if (replyAnchors[index] is { } anchor)
             {
                 var pageIndex = entry.Page - 1;
-                var note = BuildReplyNote(entry, anchor, file.Pages[pageIndex], pdf, pageIndex);
-                var outcome = Merge(file, pageIndex, note, index, touched);
+                var note = BuildReplyNote(entry, anchor);
+                var outcome = Merge(file, pageIndex, note, index, run,
+                    place: n => PlaceReply(n, anchor, Page(pageIndex).Chars, pdf.GetPageSize(pageIndex), file, pageIndex));
                 results[index] = outcome.ConflictsWith is { } other
                     ? ConflictFailure(results[index]!, other)
                     : results[index]! with { Action = outcome.Action };
@@ -284,9 +285,17 @@ public static class MarkupPlanService
             {
                 var pageIndex = entryPlacements[part].PageIndex;
                 Annotation annotation;
+                Action<TextNoteAnnotation>? place = null;
                 if (part == 0)
                 {
-                    annotation = BuildAnnotation(entry, geometry[index][part], pdf, pageIndex);
+                    annotation = BuildAnnotation(entry, geometry[index][part], Page(pageIndex).Chars, pdf.GetPageSize(pageIndex));
+                    if (annotation is TextNoteAnnotation)
+                    {
+                        var anchorLine = geometry[index][part][^1];
+                        var chars = Page(pageIndex).Chars;
+                        var size = pdf.GetPageSize(pageIndex);
+                        place = n => Move(n, NotePlacement.Beside(anchorLine, chars, size, OccupiedIcons(file, pageIndex)));
+                    }
                     if (entry.InReplyTo is { } parentId)
                         MarkAsReply(annotation, parentId);
                     // A split markup's halves are linked through /NM, so the head needs its id
@@ -299,7 +308,7 @@ public static class MarkupPlanService
                     annotation = BuildContinuation(entry, geometry[index][part], headId);
                 }
 
-                var outcome = Merge(file, pageIndex, annotation, index, touched);
+                var outcome = Merge(file, pageIndex, annotation, index, run, place);
                 if (outcome.ConflictsWith is { } other)
                 {
                     conflict = other;
@@ -343,6 +352,22 @@ public static class MarkupPlanService
         return removed;
     }
 
+    /// <summary>What this run has done so far, for telling its own work from what pre-existed.</summary>
+    private sealed class RunState
+    {
+        /// <summary>Which entry put each annotation in place during this run.</summary>
+        public Dictionary<Annotation, int> Touched { get; } = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>Every annotation an entry of this run has matched, changed or not.</summary>
+        public HashSet<Annotation> Claimed { get; } = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>
+        /// Where each note added this run would ideally sit — where a later entry for the same
+        /// note will look for it, however far avoidance moved the icon itself.
+        /// </summary>
+        public Dictionary<Annotation, NoteSpot> Ideals { get; } = new(ReferenceEqualityComparer.Instance);
+    }
+
     /// <summary>What <see cref="Merge"/> did with an annotation.</summary>
     /// <param name="Stored">The annotation now on the page — the new one, or the twin it matched.</param>
     /// <param name="ConflictsWith">Set instead of an action: the plan index of an earlier entry
@@ -356,40 +381,64 @@ public static class MarkupPlanService
     /// put it there, in which case the two entries contradict each other and the later one is
     /// refused rather than silently overwriting the first.
     /// </summary>
+    /// <param name="place">
+    /// For a note: moves it from its ideal spot to its final one, once it is known to be new. A
+    /// note that matched a twin keeps the twin's position.
+    /// </param>
     private static MergeOutcome Merge(
-        AnnotationFile file, int pageIndex, Annotation annotation, int entryIndex, Dictionary<Annotation, int> touched)
+        AnnotationFile file, int pageIndex, Annotation annotation, int entryIndex, RunState run,
+        Action<TextNoteAnnotation>? place = null)
     {
         if (!file.Pages.TryGetValue(pageIndex, out var pageAnnotations))
             file.Pages[pageIndex] = pageAnnotations = [];
 
-        var twin = pageAnnotations.FirstOrDefault(a => IsSameMarkup(a, annotation));
+        // Notes of one text may sit near each other (avoidance spreads them out), so of several
+        // candidates the one meant is the nearest to where this one would go that no earlier entry
+        // has already accounted for.
+        var twin = pageAnnotations
+            .Where(a => IsSameMarkup(a, annotation, run))
+            .MinBy(a => (run.Claimed.Contains(a) ? 1e6f : 0f) + ((a, annotation) is (TextNoteAnnotation na, TextNoteAnnotation nb)
+                ? MathF.Abs(na.Y - nb.Y) * 1000f + MathF.Abs(na.X - nb.X)
+                : 0f));
         if (twin is null)
         {
+            if (annotation is TextNoteAnnotation note && place is not null)
+            {
+                run.Ideals[note] = new NoteSpot(note.X, note.Y);
+                place(note);
+            }
             pageAnnotations.Add(annotation);
-            touched[annotation] = entryIndex;
+            run.Touched[annotation] = entryIndex;
+            run.Claimed.Add(annotation);
             return new MergeOutcome(ActionAdded, annotation);
         }
+        run.Claimed.Add(twin);
 
         bool sameContents = NormalizeContents(twin.EffectiveContents) == NormalizeContents(annotation.EffectiveContents);
         bool sameColor = string.Equals(twin.Color, annotation.Color, StringComparison.OrdinalIgnoreCase);
         if (sameContents && sameColor)
             return new MergeOutcome(ActionUnchanged, twin);
 
-        if (touched.TryGetValue(twin, out var earlier) && earlier != entryIndex)
+        if (run.Touched.TryGetValue(twin, out var earlier) && earlier != entryIndex)
             return new MergeOutcome(null, null, ConflictsWith: earlier);
 
         twin.Contents = annotation.EffectiveContents;
-        if (twin is TextNoteAnnotation note)
-            note.Text = annotation.EffectiveContents;
+        if (twin is TextNoteAnnotation twinNote)
+            twinNote.Text = annotation.EffectiveContents;
         twin.Color = annotation.Color;
         // The reader's faithful colour components would otherwise mask the new hex colour.
         twin.ColorComponents = null;
-        touched[twin] = entryIndex;
+        run.Touched[twin] = entryIndex;
         return new MergeOutcome(ActionUpdated, twin);
     }
 
-    private static bool IsSameMarkup(Annotation a, Annotation b)
+    /// <summary>
+    /// Whether <paramref name="existing"/>, already on the page, is the annotation that
+    /// <paramref name="candidate"/> (fresh from the plan, a note still at its ideal spot) describes.
+    /// </summary>
+    private static bool IsSameMarkup(Annotation existing, Annotation candidate, RunState run)
     {
+        var (a, b) = (existing, candidate);
         if (a.GetType() != b.GetType()) return false;
         if (!string.Equals(a.Author, b.Author, StringComparison.Ordinal)) return false;
 
@@ -416,9 +465,14 @@ public static class MarkupPlanService
                 && ma.Rects.Zip(mb.Rects).All(p =>
                     Near(p.First.X, p.Second.X) && Near(p.First.Y, p.Second.Y)
                     && Near(p.First.W, p.Second.W) && Near(p.First.H, p.Second.H)),
-            // Every note on a line is pinned at the same margin spot, so position alone can't tell
-            // two notes apart: what they say is part of which note they are.
-            (TextNoteAnnotation na, TextNoteAnnotation nb) => sameText && Near(na.X, nb.X) && Near(na.Y, nb.Y),
+            // A note is a free-standing icon, so what it says is part of which note it is. One
+            // this run placed is the same note only if it was aimed at the same spot; one read
+            // back from the PDF may have been moved to make room when it was placed, so it only
+            // has to be within reach of where the candidate aims.
+            (TextNoteAnnotation na, TextNoteAnnotation nb) => sameText && (
+                run.Ideals.TryGetValue(na, out var ideal)
+                    ? Near(ideal.X, nb.X) && Near(ideal.Y, nb.Y)
+                    : MathF.Abs(na.Y - nb.Y) <= NotePlacement.MaxDrift + SameGeometryTolerance),
             _ => false,
         };
     }
@@ -549,42 +603,63 @@ public static class MarkupPlanService
         annotation.NativeId = ReplyMarkup.NewId(parentId);
     }
 
-    /// <summary>
-    /// A note answering <paramref name="parent"/>, pinned in the right margin beside it and below
-    /// any replies it already has, so a thread reads top to bottom.
-    /// </summary>
-    private static TextNoteAnnotation BuildReplyNote(
-        MarkupEntry entry, Annotation parent, List<Annotation> pageAnnotations, IPdfService pdf, int pageIndex)
+    /// <summary>A note answering <paramref name="parent"/>; it is positioned once known to be new.</summary>
+    private static TextNoteAnnotation BuildReplyNote(MarkupEntry entry, Annotation parent)
     {
-        var (pageWidth, pageHeight) = pdf.GetPageSize(pageIndex);
-        var parentId = parent.NativeId!;
-        int earlierReplies = pageAnnotations.Count(a => ReplyMarkup.ParentOf(a) == parentId);
-        var y = MathF.Min(AnchorY(parent) + ReplyStep * (earlierReplies + 1), (float)pageHeight - ReplyStep);
-
         var note = new TextNoteAnnotation
         {
-            X = (float)pageWidth - NoteMarginInset,
-            Y = y,
             Text = entry.Comment ?? "",
             Color = entry.Color ?? DefaultColors[MarkupType.Note],
             Author = entry.Author ?? "AI Reviewer",
             Source = AnnotationSource.RailReader,
         };
-        MarkAsReply(note, parentId);
+        MarkAsReply(note, parent.NativeId!);
         return note;
     }
 
-    /// <summary>The vertical position a margin note beside the annotation lines up with.</summary>
-    private static float AnchorY(Annotation annotation) => annotation switch
+    /// <summary>
+    /// Pins a reply note at the foot of its thread — under its parent's icon and the replies
+    /// already there, or, for the first reply to a text markup, beside the markup's last line —
+    /// pushing any other note in that spot down, so a thread stays contiguous and reads top to
+    /// bottom.
+    /// </summary>
+    private static void PlaceReply(
+        TextNoteAnnotation note, Annotation parent, IReadOnlyList<CharBox> chars,
+        (double Width, double Height) page, AnnotationFile file, int pageIndex)
+    {
+        var notes = file.Pages.GetValueOrDefault(pageIndex)?.OfType<TextNoteAnnotation>().ToList() ?? [];
+        var thread = notes
+            .Where(n => ReferenceEquals(n, parent) || ReplyMarkup.ParentOf(n) == parent.NativeId)
+            .Select(AnchorRect)
+            .ToList();
+        var spot = thread.Count > 0
+            ? NotePlacement.UnderThread(thread, page)
+            : NotePlacement.Ideal(AnchorRect(parent, page), chars, page);
+        NotePlacement.Insert(spot, notes, page);
+        Move(note, spot);
+    }
+
+    private static void Move(TextNoteAnnotation note, NoteSpot spot) => (note.X, note.Y) = (spot.X, spot.Y);
+
+    /// <summary>The icons of the notes already on the page, which a new note must not cover.</summary>
+    private static List<RectF> OccupiedIcons(AnnotationFile file, int pageIndex)
+        => file.Pages.GetValueOrDefault(pageIndex)?.OfType<TextNoteAnnotation>().Select(AnchorRect).ToList() ?? [];
+
+    private static RectF AnchorRect(TextNoteAnnotation note) => NotePlacement.IconRect(new NoteSpot(note.X, note.Y));
+
+    /// <summary>The line (or box) a note beside <paramref name="annotation"/> lines up with.</summary>
+    private static RectF AnchorRect(Annotation annotation, (double Width, double Height) page) => annotation switch
     {
         // The last line, where a note on a quote is pinned too.
-        TextMarkupAnnotation { Rects.Count: > 0 } m => m.Rects[^1].Y + m.Rects[^1].H / 2f,
-        TextNoteAnnotation n => n.Y,
-        RectAnnotation r => r.Y + r.H / 2f,
-        CaretAnnotation c => c.Y + c.H / 2f,
-        FreeTextAnnotation f => f.Y + f.H / 2f,
-        _ => HeadingIndex.SortY(annotation),
+        TextMarkupAnnotation { Rects.Count: > 0 } m => Box(m.Rects[^1].X, m.Rects[^1].Y, m.Rects[^1].W, m.Rects[^1].H),
+        TextNoteAnnotation n => AnchorRect(n),
+        RectAnnotation r => Box(r.X, r.Y, r.W, r.H),
+        CaretAnnotation c => Box(c.X, c.Y, c.W, c.H),
+        FreeTextAnnotation f => Box(f.X, f.Y, f.W, f.H),
+        _ => Box(0, HeadingIndex.SortY(annotation), (float)page.Width, 1f),
     };
+
+    private static RectF Box(float x, float y, float w, float h) => new(x, y, x + w, y + h);
 
     /// <summary>
     /// The part of a markup that carries on over a page break. It is the same kind of markup as the
@@ -604,19 +679,21 @@ public static class MarkupPlanService
         return annotation;
     }
 
-    private static Annotation BuildAnnotation(MarkupEntry entry, List<RectF> rects, IPdfService pdf, int pageIndex)
+    private static Annotation BuildAnnotation(
+        MarkupEntry entry, List<RectF> rects, IReadOnlyList<CharBox> chars, (double Width, double Height) page)
     {
         var color = entry.Color ?? DefaultColors[entry.Type];
         var author = entry.Author ?? "AI Reviewer";
 
         if (entry.Type == MarkupType.Note)
         {
-            var (pageWidth, _) = pdf.GetPageSize(pageIndex);
-            var last = rects[^1];
+            // Built at its ideal spot, beside the last line of the quote; Merge moves it clear of
+            // other notes once it knows the note is new.
+            var ideal = NotePlacement.Ideal(rects[^1], chars, page);
             return new TextNoteAnnotation
             {
-                X = (float)pageWidth - NoteMarginInset,
-                Y = (last.Top + last.Bottom) / 2f,
+                X = ideal.X,
+                Y = ideal.Y,
                 Text = entry.Comment ?? "",
                 Color = color,
                 Author = author,

@@ -22,9 +22,9 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 | Field     | Type   | Required | Notes |
 |-----------|--------|----------|-------|
 | `page`    | int    | yes      | **1-based physical PDF page index** — the Nth page in the file, counting the cover as page 1 (this is what a PDF reader shows in its total-page count, and what `railmark --export`'s page breaks are numbered with). It is **not** the PDF's internal 0-based page index, and it is **not** the printed page label — a document with roman-numeral front matter (`i, ii, iii, …`) followed by an Arabic restart at Chapter 1 has printed labels that don't match physical position at all, and can't be expressed as an integer for the front matter. Always get `page` by counting from `--export`'s output, never from a page number printed on the page itself. For a quote that runs over a page break, `page` is the page it **starts** on. |
-| `quote`   | string | yes, except for a reply note | Exact, verbatim, contiguous substring of the PDF's extracted text on that page. See "Quote rules" below. May be omitted only by a `note` with `inReplyTo` — see "Replies". |
+| `quote`   | string | yes, except for a reply note | Exact, verbatim, contiguous substring of the PDF's extracted text on that page. See "Quote rules" below. For the text-markup types it is the text that gets marked. For a `note` it only says where the icon goes — beside the quoted line — so quote the opening words of the paragraph the note is about. May be omitted only by a `note` with `inReplyTo` — see "Replies". |
 | `type`    | string | yes      | One of: `highlight`, `underline`, `strikeout`, `squiggly`, `replace`, `note` (case-insensitive). |
-| `comment` | string | no       | For `highlight`/`underline`/`strikeout`/`squiggly`/`replace`, becomes the annotation's popup comment. For `note`, becomes the note body text itself — a `note` entry with no comment produces an empty sticky note, which is rarely useful. `note` is placed as a margin sticky note pinned to the right edge of the page (24pt inset) at the vertical midpoint of the quote's last line — it does **not** attach inline to the quoted text the way the other types do. |
+| `comment` | string | no       | For `highlight`/`underline`/`strikeout`/`squiggly`/`replace`, becomes the annotation's popup comment. For `note`, becomes the note body text itself — a `note` entry with no comment produces an empty sticky note, which is rarely useful. `note` is placed as a sticky-note icon just outside the text column, level with the quoted line (in the nearer margin, or the gutter of a two-column page), and below any note already there — it does **not** attach to the quoted text the way the other types do, which is why a note is for a remark about a passage and a highlight with a `comment` for a remark about particular words (see the skill's editorial conventions). |
 | `replacement` | string | for `replace` | The text that should replace the quote. Required (non-empty, and without a blank line in it) for `replace`, and rejected on every other type. To suggest deleting text outright, use `strikeout`. |
 | `occurrence` | int | no | When the quote occurs more than once on the page: which match to mark, 1-based in reading order (counted among the matches that also satisfy `contextBefore`/`contextAfter`, if given). See "Repeated quotes". |
 | `contextBefore` | string | no | Text that must immediately precede the quote, to pick one of several matches. |
@@ -49,9 +49,10 @@ the same text — same type, same author, same geometry — and:
 - if only its `comment` or `color` differs, updates it in place (`"action": "updated"`);
 - otherwise adds a new one (`"action": "added"`).
 
-A `note` is the exception: every note on a line is pinned at the same margin spot, so a note is
-identified by its text as well as its position. A note whose text you changed is therefore
-**added** alongside the old one — use `--replace-author` (below) to drop the old round.
+A `note` is the exception: a note is a free-standing icon beside its line, so what it says is
+part of which note it is — several notes on one line are told apart by their text. A note whose
+text you changed is therefore **added** alongside the old one — use `--replace-author` (below) to
+drop the old round.
 
 Two entries in **one** plan that put different markup on the same text — the same highlight with
 two different comments, two different replacements for the same words — contradict each other.
@@ -123,8 +124,9 @@ Each record there has an `id`, its `page`, `quote` and `comment`. To reply:
 { "page": 2, "type": "note", "inReplyTo": "<id>", "comment": "Agreed — the mean, per section 3." }
 ```
 
-- A reply `note` needs **no `quote`**: it is pinned in the right margin beside the annotation it
-  answers, below any replies already there.
+- A reply `note` needs **no `quote`**: it is pinned directly beneath the note it answers (and
+  any earlier replies), or beside the text markup it answers. Other notes in the way are pushed
+  down, so a thread stays together and reads top to bottom.
 - A reply may instead carry a `quote` (any type), which marks that text as usual and links it to
   the parent.
 - `page` must be the page the parent annotation is on.
