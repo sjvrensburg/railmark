@@ -172,10 +172,27 @@ Check the dry run's `context` for the entry to confirm the choice.
 ## Editorial conventions
 
 Use each annotation type the way a real technical editor would, so the markup reads as
-intentional rather than exhaustive:
+intentional rather than exhaustive.
+
+First decide the **scope** of the feedback, because that picks the kind of annotation:
+
+- Feedback about **specific words or a sentence** — a claim, a figure, a term, a wording — goes
+  on the text itself: a `highlight`, `underline`, `squiggly`, `strikeout` or `replace` with the
+  remark in its `comment`. The reader sees exactly which words you mean.
+- Feedback about a **paragraph, section or argument as a whole** — its structure, what it
+  leaves out, how it relates to another part of the document — is a `note`. A note is a sticky
+  icon placed in the margin beside the quoted line, not on the text, so it reads as "about this
+  passage", not "about these words". Quote the paragraph's opening words so the icon sits beside
+  its first line.
+
+Don't use a `note` for a remark about one sentence (quote that sentence and highlight it with the
+remark as its `comment`), and don't highlight a whole paragraph to carry a remark about the
+paragraph (that is a `note`).
+
+Then, within that scope:
 
 - **`highlight`** — a claim, number, or statement worth the reader double-checking (a cited
-  statistic, a causal claim, a key result).
+  statistic, a causal claim, a key result). Put the remark in `comment`.
 - **`underline`** — a term or definition worth flagging (jargon, an ambiguous or undefined term,
   something the reader should look up or the author should define).
 - **`strikeout`** — something you're confident is a factual or logical error, or text that should
@@ -183,9 +200,10 @@ intentional rather than exhaustive:
 - **`replace`** — a concrete wording fix: the quote is struck through and `replacement` holds the
   text that should replace it (typos, word choice, a corrected figure). Prefer this over a
   strikeout plus a note whenever you know exactly what the text should say.
-- **`note`** — substantive commentary that doesn't fit as a short comment on a highlight/
-  underline/strikeout — a structural suggestion, a request to reconsider an argument, a
-  cross-reference to another part of the document.
+- **`note`** — commentary on a paragraph or section rather than on particular words: a
+  structural suggestion, a request to reconsider an argument, a missing consideration, a
+  cross-reference to another part of the document. Several notes on one passage stack beneath
+  each other in the margin.
 
 ## Responding to existing comments
 

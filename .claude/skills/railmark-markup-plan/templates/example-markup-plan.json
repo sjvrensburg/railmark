@@ -37,8 +37,14 @@
     {
       "page": 5,
       "quote": "the results generalize across all populations studied",
-      "type": "note",
+      "type": "highlight",
       "comment": "Strong claim; the study only covers a single-country sample — consider softening."
+    },
+    {
+      "page": 5,
+      "quote": "Turning to the robustness checks,",
+      "type": "note",
+      "comment": "This paragraph re-runs the main specification but never says which of the three models it is checking, and the limitations discussed in section 4.2 are not revisited here. Consider restructuring it around the research questions."
     },
     {
       "page": 6,
