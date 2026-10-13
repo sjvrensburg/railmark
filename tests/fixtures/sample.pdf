@@ -4,7 +4,7 @@
 << /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+<< /Type /Pages /Kids [3 0 R 4 0 R 16 0 R] /Count 3 >>
 endobj
 3 0 obj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R /Annots [12 0 R] >>
@@ -45,7 +45,7 @@ ET
 endstream
 endobj
 6 0 obj
-<< /Length 223 >>
+<< /Length 339 >>
 stream
 BT
 /F1 12 Tf
@@ -57,6 +57,15 @@ BT
 (No attempt was made to preserve the original ordering of the samples.) Tj
 0 -18 Td
 (The effect was small but consistent across every run of the experiment.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(A second run of the experiment repeated the whole) Tj
+ET
+BT
+/F1 12 Tf
+72 60 Td
+(Page 2) Tj
 ET
 endstream
 endobj
@@ -87,26 +96,41 @@ endobj
 15 0 obj
 << /Type /Annot /Subtype /Ink /Rect [395 660 455 695] /InkList [[400 665 425 690 450 670]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke c) >>
 endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 17 0 R >>
+endobj
+17 0 obj
+<< /Length 88 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(measurement with a fresh batch of samples, and it agreed.) Tj
+ET
+endstream
+endobj
 xref
-0 16
+0 18
 0000000000 65535 f 
 0000000015 00000 n 
 0000000080 00000 n 
-0000000143 00000 n 
-0000000286 00000 n 
-0000000443 00000 n 
-0000001075 00000 n 
-0000001349 00000 n 
-0000001446 00000 n 
-0000001518 00000 n 
-0000001616 00000 n 
-0000001722 00000 n 
-0000001816 00000 n 
-0000001950 00000 n 
-0000002116 00000 n 
-0000002282 00000 n 
+0000000150 00000 n 
+0000000293 00000 n 
+0000000450 00000 n 
+0000001082 00000 n 
+0000001472 00000 n 
+0000001569 00000 n 
+0000001641 00000 n 
+0000001739 00000 n 
+0000001845 00000 n 
+0000001939 00000 n 
+0000002073 00000 n 
+0000002239 00000 n 
+0000002405 00000 n 
+0000002571 00000 n 
+0000002699 00000 n 
 trailer
-<< /Size 16 /Root 1 0 R >>
+<< /Size 18 /Root 1 0 R >>
 startxref
-2448
+2838
 %%EOF

@@ -12,8 +12,12 @@ public record MarkupEntry
     /// <summary>1-based page number, matching RailMark's CLI convention.</summary>
     public required int Page { get; init; }
 
-    /// <summary>Exact, verbatim substring expected to appear in the page's extracted text.</summary>
-    public required string Quote { get; init; }
+    /// <summary>
+    /// Exact, verbatim substring expected to appear in the page's extracted text. May be omitted
+    /// only by a note that replies to an annotation (<see cref="InReplyTo"/>); the note is then
+    /// placed beside that annotation.
+    /// </summary>
+    public string? Quote { get; init; }
 
     public required MarkupType Type { get; init; }
 
@@ -25,6 +29,27 @@ public record MarkupEntry
 
     /// <summary>Defaults to "AI Reviewer" when omitted.</summary>
     public string? Author { get; init; }
+
+    /// <summary>
+    /// 1-based index of the match to mark when the quote occurs more than once on the page,
+    /// counted in reading order among the matches that also satisfy any context given.
+    /// </summary>
+    public int? Occurrence { get; init; }
+
+    /// <summary>Text that must immediately precede the quote, to pick one of several matches.</summary>
+    public string? ContextBefore { get; init; }
+
+    /// <summary>Text that must immediately follow the quote, to pick one of several matches.</summary>
+    public string? ContextAfter { get; init; }
+
+    /// <summary>
+    /// The id of an existing annotation on the same page — as reported by annotation mode's
+    /// <c>--format json</c> — that this entry replies to.
+    /// </summary>
+    public string? InReplyTo { get; init; }
+
+    /// <summary>The text to put in place of the quote. Required for, and only valid with, <see cref="MarkupType.Replace"/>.</summary>
+    public string? Replacement { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<MarkupType>))]
@@ -34,5 +59,6 @@ public enum MarkupType
     Underline,
     Strikeout,
     Squiggly,
-    Note
+    Note,
+    Replace
 }

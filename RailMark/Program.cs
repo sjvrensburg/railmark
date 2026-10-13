@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RailReader.Core.Models;
@@ -33,6 +34,11 @@ string? vlmApiKey = null;
 string? markupPlanPath = null;
 bool dryRun = false;
 bool inPlace = false;
+string? replaceAuthor = null;
+bool jsonFormat = false;
+string? authorArg = null;
+string? excludeAuthorArg = null;
+string? sinceArg = null;
 AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
 
 for (int i = 0; i < args.Length; i++)
@@ -74,6 +80,29 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--in-place":
             inPlace = true;
+            break;
+        case "--format" when i + 1 < args.Length:
+            var formatArg = args[++i];
+            switch (formatArg.ToLowerInvariant())
+            {
+                case "json": jsonFormat = true; break;
+                case "markdown" or "md": jsonFormat = false; break;
+                default:
+                    Console.Error.WriteLine($"Error: Unknown --format value: {formatArg} (expected markdown or json)");
+                    return 1;
+            }
+            break;
+        case "--author" when i + 1 < args.Length:
+            authorArg = args[++i];
+            break;
+        case "--exclude-author" when i + 1 < args.Length:
+            excludeAuthorArg = args[++i];
+            break;
+        case "--since" when i + 1 < args.Length:
+            sinceArg = args[++i];
+            break;
+        case "--replace-author" when i + 1 < args.Length:
+            replaceAuthor = args[++i];
             break;
         case "--accelerator" when i + 1 < args.Length:
             var acceleratorArg = args[++i];
@@ -125,6 +154,29 @@ if (markupPlanPath != null && (exportMode || colorArg != null || includeImages |
     return 1;
 }
 
+if (jsonFormat && (exportMode || markupPlanPath != null))
+{
+    Console.Error.WriteLine("Error: --format json applies to annotation extraction only; it cannot be combined with --export or --apply-markup.");
+    return 1;
+}
+
+if ((authorArg ?? excludeAuthorArg ?? sinceArg) != null && (exportMode || markupPlanPath != null))
+{
+    Console.Error.WriteLine("Error: --author, --exclude-author and --since apply to annotation extraction only.");
+    return 1;
+}
+
+DateTimeOffset? since = null;
+if (sinceArg != null)
+{
+    if (!DateTimeOffset.TryParse(sinceArg, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsedSince))
+    {
+        Console.Error.WriteLine($"Error: Invalid --since date: {sinceArg} (expected e.g. 2026-09-01 or 2026-09-01T14:30)");
+        return 1;
+    }
+    since = parsedSince;
+}
+
 if (dryRun && markupPlanPath == null)
 {
     Console.Error.WriteLine("Error: --dry-run is only valid with --apply-markup.");
@@ -134,6 +186,12 @@ if (dryRun && markupPlanPath == null)
 if (inPlace && markupPlanPath == null)
 {
     Console.Error.WriteLine("Error: --in-place is only valid with --apply-markup.");
+    return 1;
+}
+
+if (replaceAuthor != null && markupPlanPath == null)
+{
+    Console.Error.WriteLine("Error: --replace-author is only valid with --apply-markup.");
     return 1;
 }
 
@@ -157,7 +215,7 @@ if (colorArg != null)
 if (!stdoutMode && markupPlanPath == null)
     outputPath ??= exportMode
         ? Path.ChangeExtension(pdfPath, null) + "-export.md"
-        : Path.ChangeExtension(pdfPath, null) + "-annotations.md";
+        : Path.ChangeExtension(pdfPath, null) + (jsonFormat ? "-annotations.json" : "-annotations.md");
 
 // Initialise PDFium native library
 PdfiumResolver.Initialize();
@@ -166,7 +224,8 @@ var factory = new SkiaPdfServiceFactory();
 // --- Apply-markup mode: write AI-authored PDF markup from a JSON plan ---
 if (markupPlanPath != null)
 {
-    if (!File.Exists(markupPlanPath))
+    bool planFromStdin = markupPlanPath == "-";
+    if (!planFromStdin && !File.Exists(markupPlanPath))
     {
         Console.Error.WriteLine($"Error: Markup plan not found: {markupPlanPath}");
         return 1;
@@ -175,7 +234,9 @@ if (markupPlanPath != null)
     MarkupPlan plan;
     try
     {
-        var planJson = await File.ReadAllTextAsync(markupPlanPath);
+        var planJson = planFromStdin
+            ? await Console.In.ReadToEndAsync()
+            : await File.ReadAllTextAsync(markupPlanPath);
         var jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -214,20 +275,12 @@ if (markupPlanPath != null)
         return 1;
     }
 
-    var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(plan, markupPdf, markupTextService, existing);
+    var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(
+        plan, markupPdf, markupTextService, existing, includeContext: dryRun, replaceAuthor: replaceAuthor);
 
-    var incomingAuthors = plan.Entries
-        .Select(e => e.Author ?? "AI Reviewer")
-        .ToHashSet();
-    bool authorCollision = existing?.Pages.Values
-        .SelectMany(a => a)
-        .Any(a => a.Author != null && incomingAuthors.Contains(a.Author)) ?? false;
-    if (authorCollision)
-    {
+    if (replaceAuthor != null)
         Console.Error.WriteLine(
-            "Warning: the target already contains annotations by an author used in this plan — " +
-            "this may be a repeat run duplicating earlier markup.");
-    }
+            $"{(dryRun ? "Would remove" : "Removed")} {applyResult.Removed} earlier annotation(s) by \"{replaceAuthor}\".");
 
     if (!dryRun)
     {
@@ -265,12 +318,21 @@ if (markupPlanPath != null)
     Console.Write(JsonSerializer.Serialize(applyResult.Entries, reportOptions));
 
     int succeeded = applyResult.Entries.Count(e => e.Success);
+    var actions = string.Join(", ", new[] { MarkupPlanService.ActionAdded, MarkupPlanService.ActionUnchanged, MarkupPlanService.ActionUpdated }
+        .Select(a => (a, n: applyResult.Entries.Count(e => e.Action == a)))
+        .Where(t => t.n > 0)
+        .Select(t => $"{t.n} {t.a}"));
     Console.Error.WriteLine(
-        $"Applied {succeeded}/{applyResult.Entries.Count} markup entries" + (dryRun ? " (dry run)." : "."));
+        $"Applied {succeeded}/{applyResult.Entries.Count} markup entries"
+        + (actions.Length > 0 ? $" ({actions})" : "")
+        + (dryRun ? " — dry run, nothing written." : "."));
     foreach (var failed in applyResult.Entries.Where(e => !e.Success))
     {
-        var quote = failed.Quote.Length > 60 ? failed.Quote[..60] + "…" : failed.Quote;
-        Console.Error.WriteLine($"  FAILED page {failed.Page}: \"{quote}\" — {failed.Error}");
+        Console.Error.WriteLine($"  FAILED page {failed.Page}: {Describe(failed)} — {failed.Error}");
+    }
+    foreach (var warned in applyResult.Entries.Where(e => e.Warning != null))
+    {
+        Console.Error.WriteLine($"  WARNING page {warned.Page}: {Describe(warned)} — {warned.Warning}");
     }
 
     return applyResult.AllSucceeded ? 0 : 2;
@@ -341,6 +403,8 @@ catch (Exception ex)
 if (annotationFile == null || !annotationFile.Pages.Any(p => p.Value.Count > 0))
 {
     Console.Error.WriteLine("No annotations found. Nothing to export.");
+    // A consumer parsing JSON should get an empty result, not nothing at all.
+    if (jsonFormat) WriteOutput(EmptyJson(pdfPath));
     return 0;
 }
 
@@ -354,7 +418,20 @@ if (pagesArg != null)
 
 // Apply colour filter
 if (colorFilter != null)
-    annotationFile = FilterAnnotations(annotationFile, a => colorFilter.Contains(NormalizeColor(a.Color)));
+    annotationFile = AnnotationFilter.Where(annotationFile, a => colorFilter.Contains(NormalizeColor(a.Color)));
+
+// Apply author and date filters
+if (authorArg != null || excludeAuthorArg != null)
+    annotationFile = AnnotationFilter.ByAuthor(annotationFile,
+        authorArg is null ? null : SplitList(authorArg),
+        excludeAuthorArg is null ? null : SplitList(excludeAuthorArg));
+
+if (since is { } sinceDate)
+{
+    annotationFile = AnnotationFilter.Since(annotationFile, sinceDate, out var undated);
+    if (undated > 0)
+        Console.Error.WriteLine($"Note: --since excluded {undated} annotation(s) that carry no date.");
+}
 
 int totalAnnotations = annotationFile.Pages.Values.Sum(p => p.Count);
 Console.Error.WriteLine($"Found {totalAnnotations} annotations across {annotationFile.Pages.Count} pages.");
@@ -362,6 +439,7 @@ Console.Error.WriteLine($"Found {totalAnnotations} annotations across {annotatio
 if (totalAnnotations == 0)
 {
     Console.Error.WriteLine("No annotations found after filtering. Nothing to export.");
+    if (jsonFormat) WriteOutput(EmptyJson(pdfPath));
     return 0;
 }
 
@@ -373,6 +451,9 @@ var textService = new PdfTextService();
 // highlights.
 var pageTexts = new Dictionary<int, string>();
 var highlightTexts = new Dictionary<(int page, int annotIdx), string>();
+// Where each markup starts in its page's text, so the bold-in-context line bolds the occurrence
+// that was actually marked rather than the first one on the page.
+var markupOffsets = new Dictionary<(int page, int annotIdx), int>();
 
 foreach (var (pageIdx, annotations) in annotationFile.Pages)
 {
@@ -407,6 +488,9 @@ foreach (var (pageIdx, annotations) in annotationFile.Pages)
             if (parts.Count > 0)
                 highlightTexts[(pageIdx, i)] =
                     TextLocator.SpanCoveringParts(pageText.Text, parts) ?? string.Join(" ", parts);
+
+            if (FirstCharIndexIn(pageText, TextExtractionBounds(markup, markup.Rects[0])) is { } offset)
+                markupOffsets[(pageIdx, i)] = offset;
         }
     }
 }
@@ -426,29 +510,40 @@ if (includeImages)
     Console.Error.WriteLine($"Cropped {images.Count} annotation images.");
 }
 
-var builder = new MarkdownBuilder(
-    annotationFile,
-    Path.GetFileName(pdfPath),
-    pdf.Outline,
-    highlightTexts,
-    pageTexts,
-    images,
-    imageRelDir,
-    headingPositions);
+var output = jsonFormat
+    ? new AnnotationJsonBuilder(
+        annotationFile, Path.GetFileName(pdfPath), pdf.Outline, highlightTexts, pageTexts,
+        images, imageRelDir, headingPositions, markupOffsets).Build()
+    : new MarkdownBuilder(
+        annotationFile, Path.GetFileName(pdfPath), pdf.Outline, highlightTexts, pageTexts,
+        images, imageRelDir, headingPositions, markupOffsets).Build();
 
-var markdown = builder.Build();
-
-if (stdoutMode)
-    Console.Write(markdown);
-else
-{
-    File.WriteAllText(outputPath!, markdown);
-    Console.Error.WriteLine($"Written to: {outputPath}");
-}
+WriteOutput(output);
 
 return 0;
 
 // --- Helpers ---
+
+static string Describe(MarkupEntryResult entry)
+{
+    if (string.IsNullOrEmpty(entry.Quote))
+        return entry.InReplyTo != null ? $"reply to {entry.InReplyTo}" : "(no quote)";
+    return "\"" + (entry.Quote.Length > 60 ? entry.Quote[..60] + "…" : entry.Quote) + "\"";
+}
+
+void WriteOutput(string content)
+{
+    if (stdoutMode)
+        Console.Write(content);
+    else
+    {
+        File.WriteAllText(outputPath!, content);
+        Console.Error.WriteLine($"Written to: {outputPath}");
+    }
+}
+
+static string EmptyJson(string pdfPath)
+    => new AnnotationJsonBuilder(new AnnotationFile(), Path.GetFileName(pdfPath), []).Build();
 
 /// <summary>
 /// The rect to pull text from for a text-markup annotation. Highlights and strikeouts are drawn
@@ -466,6 +561,23 @@ static (float X0, float Y0, float X1, float Y1) TextExtractionBounds(TextMarkupA
     var glyphHeight = MathF.Max(r.H / 0.15f, r.H);
     var bottom = r.Y + r.H;
     return (r.X, bottom - glyphHeight, r.X + r.W, bottom);
+}
+
+/// <summary>
+/// The lowest text index among the characters whose midpoint falls inside the rect — the same
+/// inclusion rule PageText.ExtractTextInRect uses — or null when the rect covers no characters.
+/// </summary>
+static int? FirstCharIndexIn(PageText pageText, (float X0, float Y0, float X1, float Y1) rect)
+{
+    int? first = null;
+    foreach (var box in pageText.CharBoxes)
+    {
+        var midX = (box.Left + box.Right) / 2f;
+        var midY = (box.Top + box.Bottom) / 2f;
+        if (midX < rect.X0 || midX > rect.X1 || midY < rect.Y0 || midY > rect.Y1) continue;
+        if (first is null || box.Index < first) first = box.Index;
+    }
+    return first;
 }
 
 /// <summary>
@@ -545,20 +657,8 @@ static AnnotationFile FilterPages(AnnotationFile src, Func<int, List<Annotation>
     return dst;
 }
 
-static AnnotationFile FilterAnnotations(AnnotationFile src, Func<Annotation, bool> pred)
-{
-    var dst = new AnnotationFile
-    {
-        Version = src.Version, SourcePdf = src.SourcePdf,
-        SourcePdfPath = src.SourcePdfPath, Bookmarks = src.Bookmarks,
-    };
-    foreach (var (k, v) in src.Pages)
-    {
-        var filtered = v.Where(pred).ToList();
-        if (filtered.Count > 0) dst.Pages[k] = filtered;
-    }
-    return dst;
-}
+static string[] SplitList(string input)
+    => input.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
 static HashSet<string>? ParseColorFilter(string input)
 {
@@ -611,7 +711,19 @@ static void PrintUsage()
           -o <path>            Output file (default: <pdf-stem>-annotations.md). Use - for stdout
           --pages <range>      Only include annotations from these pages (e.g. "1,3,5-10")
           --color <hex>        Filter by annotation colour (e.g. "#FF0000" or "ff0000,ffcc00")
+          --author <names>     Only include annotations by these authors (comma-separated,
+                               case-insensitive)
+          --exclude-author <names>
+                               Leave out annotations by these authors (e.g. "AI Reviewer" to
+                               see only the human markup)
+          --since <date>       Only include annotations created or last modified on or after
+                               <date> (e.g. 2026-09-01 or 2026-09-01T14:30; local time unless
+                               an offset is given). Annotations without a date are left out
           --images             Include cropped screenshots for rect/freehand annotations
+          --format <markdown|json>
+                               Annotation-mode output format (default: markdown). json emits
+                               one record per annotation, shaped like a markup-plan entry
+                               (default output: <pdf-stem>-annotations.json)
           --export             Export full document to Markdown (layout-aware, includes annotations)
           --no-vlm             Disable VLM transcription (with --export)
           --vlm-endpoint <url> Override VLM endpoint URL (with --export)
@@ -622,13 +734,20 @@ static void PrintUsage()
                                gpu opportunistically uses a native WebGPU execution provider
                                and falls back to cpu if no device is available.
           --apply-markup <plan.json>
-                               Write PDF markup (highlight/underline/strikeout/note) from a
-                               JSON markup plan into a new PDF (default: <pdf-stem>-marked.pdf,
+                               Write PDF markup (highlight/underline/strikeout/squiggly/
+                               replace/note) from a JSON markup plan (- reads it from stdin)
+                               into a new PDF (default: <pdf-stem>-marked.pdf,
                                or -o <path>). The input PDF is never modified unless --in-place
                                is given. Reports per-entry results as JSON on stdout.
           --in-place           With --apply-markup, write annotations directly into the input
                                PDF instead of a copy. Cannot be combined with -o.
-          --dry-run            With --apply-markup, resolve and report only; do not write
+          --replace-author <name>
+                               With --apply-markup, first remove every existing annotation
+                               by <name> — to revise an earlier round of markup rather than
+                               add to it. (Re-applying a plan never duplicates identical
+                               markup either way.)
+          --dry-run            With --apply-markup, resolve and report only; do not write.
+                               The report then also shows the text around each match
           --version            Show the railmark version
           -h, --help           Show this help
         """);

@@ -14,7 +14,10 @@ public class MarkdownBuilder
     private readonly Dictionary<int, string>? _pageTexts;
     private readonly Dictionary<(int page, int annotIdx), string>? _images;
     private readonly string? _imageRelDir;
-    private readonly Dictionary<int, (string text, int[] map)> _normPageCache = [];
+    private readonly Dictionary<int, NormalizedText> _normPageCache = [];
+    // Where each text-markup annotation starts in its page's text, when known — used to pick the
+    // right occurrence when the marked text appears more than once on the page.
+    private readonly Dictionary<(int page, int annotIdx), int>? _markupOffsets;
     // Vertical position of each heading on its own page, keyed by HeadingKey. Only populated for
     // headings whose title could be located in the page text; absent means page-level ordering.
     private readonly Dictionary<string, float>? _headingPositions;
@@ -23,6 +26,10 @@ public class MarkdownBuilder
     private readonly Dictionary<CaretAnnotation, (int page, int annotIdx)> _caretReplacements = [];
     // (page, annotIdx) of annotations rendered as part of another annotation, not on their own.
     private readonly HashSet<(int page, int annotIdx)> _groupChildren = [];
+    // Reply notes, keyed by the annotation they answer, in reading order — rendered beneath it.
+    private readonly Dictionary<(int page, int annotIdx), List<(int page, int annotIdx)>> _replies = [];
+    // Markup split over a page break: head (page, annotIdx) → its continuation on the next page.
+    private Dictionary<(int page, int annotIdx), (int page, int annotIdx)> _continuations = [];
 
     public MarkdownBuilder(
         AnnotationFile annotations,
@@ -32,7 +39,8 @@ public class MarkdownBuilder
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int page, int annotIdx), string>? images = null,
         string? imageRelDir = null,
-        Dictionary<string, float>? headingPositions = null)
+        Dictionary<string, float>? headingPositions = null,
+        Dictionary<(int page, int annotIdx), int>? markupOffsets = null)
     {
         _annotations = annotations;
         _sourceName = sourceName;
@@ -42,6 +50,7 @@ public class MarkdownBuilder
         _images = images;
         _imageRelDir = imageRelDir;
         _headingPositions = headingPositions;
+        _markupOffsets = markupOffsets;
     }
 
     public string Build()
@@ -50,29 +59,14 @@ public class MarkdownBuilder
         sb.AppendLine($"# Annotations: {_sourceName}");
         sb.AppendLine();
 
-        // Build heading index (DFS order = outline order); deduplicate keys so a PDF
-        // with duplicate bookmark entries doesn't emit the same section twice.
-        var headingOrder = new List<(string key, string title, int depth)>();
-        BuildHeadingIndex(_outline, 0, headingOrder, []);
-
-        // Flatten outline sorted by reading order (page, then vertical position where known) for
-        // heading assignment. Without the Y component every annotation on a page carrying two
-        // headings would be filed under the first of them.
-        var sortedHeadings = new List<(string key, int? page, float y)>();
-        CollectHeadingsByPage(_outline, sortedHeadings, _headingPositions);
-        sortedHeadings.Sort((a, b) =>
-        {
-            // Entries without a page go to the end
-            if (a.page == null && b.page == null) return 0;
-            if (a.page == null) return 1;
-            if (b.page == null) return -1;
-            var pageCmp = a.page.Value.CompareTo(b.page.Value);
-            return pageCmp != 0 ? pageCmp : a.y.CompareTo(b.y);
-        });
-
-        var validKeys = new HashSet<string>(headingOrder.Select(h => h.key));
+        var headings = new HeadingIndex(_outline, _headingPositions);
+        var headingOrder = headings.Order;
 
         BuildCaretReplacements();
+        _continuations = ContinuationMarkup.Pair(_annotations);
+        foreach (var tail in _continuations.Values)
+            _groupChildren.Add(tail);
+        BuildReplyThreads();
 
         // Group annotations by heading
         var grouped = new Dictionary<string, List<(int page, int annotIdx, Annotation annotation)>>();
@@ -82,7 +76,7 @@ public class MarkdownBuilder
             for (int i = 0; i < annotations.Count; i++)
             {
                 var annotation = annotations[i];
-                var headingKey = FindNearestHeadingKey(sortedHeadings, validKeys, pageIdx, GetSortY(annotation));
+                var headingKey = headings.KeyFor(pageIdx, HeadingIndex.SortY(annotation));
 
                 if (!grouped.ContainsKey(headingKey))
                     grouped[headingKey] = [];
@@ -97,7 +91,7 @@ public class MarkdownBuilder
             group.Sort((a, b) =>
             {
                 var pageCmp = a.page.CompareTo(b.page);
-                return pageCmp != 0 ? pageCmp : GetSortY(a.annotation).CompareTo(GetSortY(b.annotation));
+                return pageCmp != 0 ? pageCmp : HeadingIndex.SortY(a.annotation).CompareTo(HeadingIndex.SortY(b.annotation));
             });
         }
 
@@ -117,7 +111,7 @@ public class MarkdownBuilder
         }
 
         // Ungrouped annotations
-        if (grouped.TryGetValue("__no_heading__", out var ungrouped))
+        if (grouped.TryGetValue(HeadingIndex.NoHeadingKey, out var ungrouped))
         {
             sb.AppendLine("## Other Annotations");
             sb.AppendLine();
@@ -126,42 +120,6 @@ public class MarkdownBuilder
 
         return sb.ToString();
     }
-
-    /// <summary>
-    /// Picks the last heading that precedes the annotation in reading order. Headings whose
-    /// position on the page is unknown sort to the top of their page (y == 0), which reproduces
-    /// the previous page-only behaviour for them.
-    /// </summary>
-    private static string FindNearestHeadingKey(
-        List<(string key, int? page, float y)> sortedHeadings,
-        HashSet<string> validKeys,
-        int annotPage,
-        float annotY)
-    {
-        string? bestKey = null;
-        foreach (var (key, page, y) in sortedHeadings)
-        {
-            if (!page.HasValue) break;
-
-            bool precedes = page.Value < annotPage || (page.Value == annotPage && y <= annotY);
-            if (!precedes) break;
-
-            if (validKeys.Contains(key))
-                bestKey = key;
-        }
-        return bestKey ?? "__no_heading__";
-    }
-
-    private static float GetSortY(Annotation a) => a switch
-    {
-        TextMarkupAnnotation m => m.Rects.Count > 0 ? m.Rects[0].Y : 0,
-        TextNoteAnnotation n => n.Y,
-        RectAnnotation r => r.Y,
-        CaretAnnotation c => c.Y,
-        FreeTextAnnotation f => f.Y,
-        FreehandAnnotation f => f.Points.Count > 0 ? f.Points.Min(p => p.Y) : 0,
-        _ => 0
-    };
 
     /// <summary>
     /// A "replace this text with that text" edit is written as a caret carrying the replacement
@@ -193,6 +151,73 @@ public class MarkdownBuilder
         }
     }
 
+    /// <summary>
+    /// Threads reply notes under the annotation they answer. A reply whose parent is not in the
+    /// file, or is itself rendered as part of another entry, stays where it is as an ordinary note.
+    /// </summary>
+    private void BuildReplyThreads()
+    {
+        var byId = new Dictionary<string, (int page, int annotIdx)>(StringComparer.Ordinal);
+        foreach (var (pageIdx, annotations) in _annotations.Pages)
+            for (int i = 0; i < annotations.Count; i++)
+                if (!string.IsNullOrEmpty(annotations[i].NativeId))
+                    byId.TryAdd(annotations[i].NativeId!, (pageIdx, i));
+
+        var replies = new List<((int page, int annotIdx) reply, (int page, int annotIdx) parent)>();
+        foreach (var (pageIdx, annotations) in _annotations.Pages)
+        {
+            for (int i = 0; i < annotations.Count; i++)
+            {
+                if (annotations[i] is not TextNoteAnnotation note) continue;
+                if (ReplyMarkup.ParentOf(note) is not { } parentId) continue;
+                if (!byId.TryGetValue(parentId, out var parent) || _groupChildren.Contains(parent)) continue;
+                replies.Add(((pageIdx, i), parent));
+            }
+        }
+
+        // Malformed /IRT data can make replies point at each other (or a note at itself). A reply
+        // is only rendered beneath its parent, so in a cycle nothing would ever be rendered at
+        // all: leave any reply whose chain of parents loops as an ordinary note.
+        var parentOf = replies.ToDictionary(r => r.reply, r => r.parent);
+        bool Loops((int page, int annotIdx) start)
+        {
+            var seen = new HashSet<(int page, int annotIdx)> { start };
+            var current = start;
+            while (parentOf.TryGetValue(current, out var next))
+            {
+                if (!seen.Add(next)) return true;
+                current = next;
+            }
+            return false;
+        }
+        replies.RemoveAll(r => Loops(r.reply));
+
+        foreach (var (reply, parent) in replies
+                     .OrderBy(r => r.reply.page)
+                     .ThenBy(r => HeadingIndex.SortY(_annotations.Pages[r.reply.page][r.reply.annotIdx])))
+        {
+            if (!_replies.TryGetValue(parent, out var list))
+                _replies[parent] = list = [];
+            list.Add(reply);
+            _groupChildren.Add(reply);
+        }
+    }
+
+    private void EmitReplies(StringBuilder sb, (int page, int annotIdx) parent, int depth = 1)
+    {
+        if (!_replies.TryGetValue(parent, out var replies)) return;
+
+        var quote = string.Concat(Enumerable.Repeat("> ", depth + 1)).TrimEnd();
+        foreach (var reply in replies)
+        {
+            var note = _annotations.Pages[reply.page][reply.annotIdx];
+            var author = string.IsNullOrWhiteSpace(note.Author) ? "" : $" — {note.Author}";
+            sb.AppendLine($"{quote} **Reply{author}:** {note.EffectiveContents}");
+            sb.AppendLine();
+            EmitReplies(sb, reply, depth + 1);
+        }
+    }
+
     private void EmitSummary(
         StringBuilder sb,
         List<(string key, string title, int depth)> headingOrder,
@@ -215,7 +240,7 @@ public class MarkdownBuilder
             sb.AppendLine($"| {title} | {Count<TextMarkupAnnotation>(list)} | {Count<TextNoteAnnotation>(list)} | {Count<RectAnnotation>(list)} | {Count<FreehandAnnotation>(list)} | {CountOther(list)} |");
         }
 
-        if (grouped.TryGetValue("__no_heading__", out var ug))
+        if (grouped.TryGetValue(HeadingIndex.NoHeadingKey, out var ug))
             sb.AppendLine($"| *(Other)* | {Count<TextMarkupAnnotation>(ug)} | {Count<TextNoteAnnotation>(ug)} | {Count<RectAnnotation>(ug)} | {Count<FreehandAnnotation>(ug)} | {CountOther(ug)} |");
 
         sb.AppendLine();
@@ -245,6 +270,7 @@ public class MarkdownBuilder
                 suppressImage = true;
 
             EmitAnnotation(sb, page, annotIdx, annotation, suppressImage);
+            EmitReplies(sb, (page, annotIdx));
         }
     }
 
@@ -277,7 +303,19 @@ public class MarkdownBuilder
     }
 
     private string GetMarkupText(int page, int annotIdx)
-        => CleanText(_highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var t) ? t : "");
+    {
+        var text = CleanText(_highlightTexts != null && _highlightTexts.TryGetValue((page, annotIdx), out var t) ? t : "");
+        // A markup that runs over a page break reads as one, with its continuation's text.
+        if (_continuations.TryGetValue((page, annotIdx), out var tail))
+            text = ContinuationMarkup.JoinText(text, GetMarkupText(tail.page, tail.annotIdx));
+        return text;
+    }
+
+    /// <summary>"p. 3" — or "pp. 3–4" for a markup that runs over a page break.</summary>
+    private string PageSpan(int page, int annotIdx)
+        => _continuations.TryGetValue((page, annotIdx), out var tail)
+            ? $"pp. {page + 1}–{tail.page + 1}"
+            : $"p. {page + 1}";
 
     /// <summary>
     /// Some readers (Skim, notably) pre-fill an annotation's /Contents with a copy of the text it
@@ -294,13 +332,14 @@ public class MarkdownBuilder
 
         if (!string.IsNullOrWhiteSpace(highlightedText))
         {
-            var pageText = _pageTexts?.GetValueOrDefault(page);
+            // A highlight continued on the next page doesn't sit within one page's text.
+            var pageText = _continuations.ContainsKey((page, annotIdx)) ? null : _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
                 // The context is page text emitted verbatim, so it still carries the extractor's
                 // invisible de-hyphenation markers. Strip them after the offsets have been used.
                 var bolded = TextLocator.StripInvisibleMarkers(
-                    BoldHighlightInContext(page, pageText, highlightedText));
+                    BoldHighlightInContext(page, annotIdx, pageText, highlightedText));
                 sb.AppendLine($"> {bolded}");
             }
             else
@@ -316,7 +355,7 @@ public class MarkdownBuilder
         }
 
         sb.AppendLine(">");
-        sb.AppendLine($"> {GetLabel(page, "highlight")}");
+        sb.AppendLine($"> *({PageSpan(page, annotIdx)}, highlight)*");
         sb.AppendLine();
     }
 
@@ -327,6 +366,22 @@ public class MarkdownBuilder
     private void EmitTextMarkup(StringBuilder sb, int page, int annotIdx, TextMarkupAnnotation markup)
     {
         var markedText = GetMarkupText(page, annotIdx);
+
+        if (ReplacementMarkup.TryParse(markup, out var replacement, out var replacementComment))
+        {
+            sb.AppendLine(!string.IsNullOrWhiteSpace(markedText)
+                ? $"> ~~{markedText}~~ → **{CleanText(replacement)}**"
+                : $"> Replace with **{CleanText(replacement)}**");
+            if (!string.IsNullOrWhiteSpace(replacementComment))
+            {
+                sb.AppendLine(">");
+                sb.AppendLine($"> **Comment:** {replacementComment}");
+            }
+            sb.AppendLine(">");
+            sb.AppendLine($"> *({PageSpan(page, annotIdx)}, suggested replacement)*");
+            sb.AppendLine();
+            return;
+        }
 
         var (label, rendered) = markup switch
         {
@@ -346,7 +401,7 @@ public class MarkdownBuilder
         }
 
         sb.AppendLine(">");
-        sb.AppendLine($"> {GetLabel(page, label)}");
+        sb.AppendLine($"> *({PageSpan(page, annotIdx)}, {label})*");
         sb.AppendLine();
     }
 
@@ -463,71 +518,33 @@ public class MarkdownBuilder
         return $"*({string.Join(", ", parts)})*";
     }
 
-    private string BoldHighlightInContext(int page, string pageText, string highlightText)
+    private string BoldHighlightInContext(int page, int annotIdx, string pageText, string highlightText)
     {
-        // Tier 1: exact match
-        var idx = pageText.IndexOf(highlightText, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-        {
-            return pageText[..idx]
-                + "**" + pageText.Substring(idx, highlightText.Length) + "**"
-                + pageText[(idx + highlightText.Length)..];
-        }
+        // Normalised matching covers the verbatim case too; cache per page to avoid
+        // O(highlights × pageLen) normalisation.
+        if (!_normPageCache.TryGetValue(page, out var normPage))
+            _normPageCache[page] = normPage = NormalizedText.From(pageText);
 
-        // Tier 2: fuzzy match (normalised whitespace) — cache per page to avoid O(highlights × pageLen)
-        if (!_normPageCache.TryGetValue(page, out var cached))
-            _normPageCache[page] = cached = TextLocator.NormalizeWithMap(pageText);
-        var (normPage, pageMap) = cached;
-        var normHighlight = TextLocator.CleanText(highlightText);
-
-        var normIdx = normPage.IndexOf(normHighlight, StringComparison.OrdinalIgnoreCase);
-        if (normIdx >= 0 && normIdx + normHighlight.Length < pageMap.Length)
+        var matches = TextLocator.FindQuoteMatches(normPage, highlightText);
+        if (matches.Count > 0)
         {
-            var origStart = pageMap[normIdx];
-            var origEnd = pageMap[normIdx + normHighlight.Length];
-            return pageText[..origStart]
-                + "**" + pageText[origStart..origEnd] + "**"
-                + pageText[origEnd..];
+            // The same words can appear several times on a page; bold the occurrence the
+            // annotation actually covers when its position is known.
+            var match = _markupOffsets != null && _markupOffsets.TryGetValue((page, annotIdx), out var offset)
+                ? matches.MinBy(m => Math.Abs(m.CharStart - offset))
+                : matches[0];
+            var end = match.CharStart + match.CharLength;
+            return pageText[..match.CharStart]
+                + "**" + pageText[match.CharStart..end] + "**"
+                + pageText[end..];
         }
 
         // Fall back to just the highlighted text bolded
         return $"**{highlightText}**";
     }
 
-    /// <summary>
-    /// Stable identity for an outline entry. Public so callers that resolve heading positions
-    /// out of band (they need the PDF text service, which this class has no access to) can key
-    /// the map they pass as <c>headingPositions</c> the same way.
-    /// </summary>
-    internal static string HeadingKey(string title, int? page) => $"{title}||{page}";
-
-    private static void BuildHeadingIndex(
-        List<OutlineEntry> entries, int depth,
-        List<(string key, string title, int depth)> order,
-        HashSet<string> seen)
-    {
-        foreach (var entry in entries)
-        {
-            var key = HeadingKey(entry.Title, entry.Page);
-            if (seen.Add(key))
-                order.Add((key, entry.Title, depth));
-            BuildHeadingIndex(entry.Children, depth + 1, order, seen);
-        }
-    }
-
-    private static void CollectHeadingsByPage(
-        List<OutlineEntry> entries,
-        List<(string key, int? page, float y)> result,
-        Dictionary<string, float>? headingPositions)
-    {
-        foreach (var entry in entries)
-        {
-            var key = HeadingKey(entry.Title, entry.Page);
-            var y = headingPositions != null && headingPositions.TryGetValue(key, out var found) ? found : 0f;
-            result.Add((key, entry.Page, y));
-            CollectHeadingsByPage(entry.Children, result, headingPositions);
-        }
-    }
+    /// <summary>Stable identity for an outline entry — see <see cref="HeadingIndex.Key"/>.</summary>
+    internal static string HeadingKey(string title, int? page) => HeadingIndex.Key(title, page);
 
     internal static string CleanText(string text) => TextLocator.CleanText(text);
 }

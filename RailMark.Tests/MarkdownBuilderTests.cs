@@ -26,8 +26,9 @@ public class MarkdownBuilderTests
         Dictionary<int, string>? pageTexts = null,
         Dictionary<(int, int), string>? images = null,
         string? imageRelDir = null,
-        Dictionary<string, float>? headingPositions = null)
-        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir, headingPositions);
+        Dictionary<string, float>? headingPositions = null,
+        Dictionary<(int, int), int>? markupOffsets = null)
+        => new(file, file.SourcePdf, outline ?? [], highlightTexts, pageTexts, images, imageRelDir, headingPositions, markupOffsets);
 
     private static int CountOccurrences(string source, string value)
     {
@@ -67,6 +68,127 @@ public class MarkdownBuilderTests
 
         Assert.Contains("**word two**", md);
         Assert.DoesNotContain("Highlighted:", md);
+    }
+
+    [Fact]
+    public void Highlight_Bolds_The_Occurrence_It_Covers_When_Text_Repeats()
+    {
+        const string text = "Run the test. Then run the test again.";
+        var file = MakeFile([(0, [new HighlightAnnotation { Rects = [new(50, 50, 100, 10)] }])]);
+        var pageTexts = new Dictionary<int, string> { [0] = text };
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the test" };
+        var offsets = new Dictionary<(int, int), int> { [(0, 0)] = text.LastIndexOf("the test", StringComparison.Ordinal) };
+
+        var withOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts, markupOffsets: offsets).Build();
+        var withoutOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts).Build();
+
+        Assert.Contains("> Run the test. Then run **the test** again.", withOffset);
+        Assert.Contains("> Run **the test**. Then run the test again.", withoutOffset);
+    }
+
+    [Fact]
+    public void Tagged_Strikeout_Renders_As_Suggested_Replacement()
+    {
+        var strike = new StrikeOutAnnotation
+        {
+            Subject = "Replacement",
+            Contents = "Replace with: red fox\n\nColour is wrong.",
+            Rects = [new(50, 50, 100, 10)],
+        };
+        var file = MakeFile([(0, [strike])]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "brown fox" };
+
+        var md = Build(file, [H("Chapter 1", 0)], hlTexts).Build();
+
+        Assert.Contains("> ~~brown fox~~ → **red fox**", md);
+        Assert.Contains("> **Comment:** Colour is wrong.", md);
+        Assert.Contains("suggested replacement", md);
+        Assert.DoesNotContain("suggested deletion", md);
+        Assert.DoesNotContain("Replace with:", md);
+    }
+
+    [Fact]
+    public void Markup_Over_A_Page_Break_Renders_Once_Across_Both_Pages()
+    {
+        var file = MakeFile(
+        [
+            (0, [new HighlightAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)], Contents = "why?" }]),
+            (1, [new HighlightAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the whole", [(1, 0)] = "measurement with" };
+        var pageTexts = new Dictionary<int, string> { [0] = "A run repeated the whole", [1] = "measurement with a batch" };
+
+        var md = Build(file, [H("Results", 0)], hlTexts, pageTexts).Build();
+
+        Assert.Contains("> **the whole measurement with**", md);
+        Assert.Contains("*(pp. 1–2, highlight)*", md);
+        Assert.Equal(1, CountOccurrences(md, "> **Comment:** why?"));
+        Assert.DoesNotContain("(p. 2, highlight)", md);
+    }
+
+    [Fact]
+    public void Replacement_Over_A_Page_Break_Renders_As_One_Replacement()
+    {
+        var file = MakeFile(
+        [
+            (0, [new StrikeOutAnnotation { Author = "AI", Rects = [new(10, 700, 50, 10)], Subject = "Replacement", Contents = "Replace with: every" }]),
+            (1, [new StrikeOutAnnotation { Author = "AI", Rects = [new(10, 60, 50, 10)], Subject = "Continuation" }]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "the whole", [(1, 0)] = "measurement" };
+
+        var md = Build(file, [H("Results", 0)], hlTexts).Build();
+
+        Assert.Contains("> ~~the whole measurement~~ → **every**", md);
+        Assert.Contains("*(pp. 1–2, suggested replacement)*", md);
+        Assert.DoesNotContain("suggested deletion", md);
+    }
+
+    [Fact]
+    public void Replies_Are_Threaded_Under_Their_Parent()
+    {
+        var file = MakeFile(
+        [
+            (0,
+            [
+                new TextNoteAnnotation { NativeId = "reply-2", InReplyTo = "p1", Y = 90, Contents = "Second answer.", Author = "Bob" },
+                new HighlightAnnotation { NativeId = "p1", Rects = [new(50, 50, 100, 10)], Contents = "Question?", Author = "Ann" },
+                new TextNoteAnnotation { NativeId = "p1#reply-a", Y = 70, Contents = "First answer.", Author = "AI Reviewer" },
+                new TextNoteAnnotation { NativeId = "p1#reply-a#reply-b", Y = 200, Contents = "Follow-up.", Author = "Ann" },
+                new TextNoteAnnotation { NativeId = "orphan#reply-c", Y = 300, Contents = "Lost reply." },
+            ]),
+        ]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 1)] = "brown fox" };
+
+        var md = Build(file, [H("Chapter 1", 0)], hlTexts).Build();
+
+        var first = md.IndexOf("> > **Reply — AI Reviewer:** First answer.", StringComparison.Ordinal);
+        var nested = md.IndexOf("> > > **Reply — Ann:** Follow-up.", StringComparison.Ordinal);
+        var second = md.IndexOf("> > **Reply — Bob:** Second answer.", StringComparison.Ordinal);
+        Assert.True(md.IndexOf("Question?", StringComparison.Ordinal) < first, md);
+        Assert.True(first < nested && nested < second, md);
+        // Threaded replies are not repeated as standalone notes; an orphan still is.
+        Assert.DoesNotContain("**Note:** First answer.", md);
+        Assert.Contains("> **Note:** Lost reply.", md);
+    }
+
+    [Fact]
+    public void Reply_Cycles_Are_Rendered_As_Plain_Notes_Not_Dropped()
+    {
+        var file = MakeFile(
+        [
+            (0,
+            [
+                new TextNoteAnnotation { NativeId = "a", InReplyTo = "b", Y = 10, Contents = "Note A." },
+                new TextNoteAnnotation { NativeId = "b", InReplyTo = "a", Y = 20, Contents = "Note B." },
+                new TextNoteAnnotation { NativeId = "self", InReplyTo = "self", Y = 30, Contents = "Note C." },
+            ]),
+        ]);
+
+        var md = Build(file, [H("Chapter 1", 0)]).Build();
+
+        Assert.Contains("> **Note:** Note A.", md);
+        Assert.Contains("> **Note:** Note B.", md);
+        Assert.Contains("> **Note:** Note C.", md);
     }
 
     [Fact]
