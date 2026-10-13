@@ -1,5 +1,7 @@
 # RailMark
 
+**Website:** https://sjvrensburg.github.io/railmark/
+
 A command-line tool that converts PDFs to structured Markdown, and writes AI-authored markup back into them. It has three modes:
 
 - **Annotation mode** (default) — extracts annotations from *any* annotated PDF (highlights, underlines, strikeouts, squigglies, notes, rectangles, freehand, carets, free-text) and groups them under document headings, as Markdown or, with `--format json`, as structured records an agent can act on. It reads the annotations the PDF itself carries, so it does not matter which tool wrote them — Acrobat, Preview, Okular, Zotero, [RailReader2](https://github.com/sjvrensburg/railreader2), or RailMark's own `--apply-markup`. RailReader2 sidecar files are picked up too, for PDFs that cannot be written to.
