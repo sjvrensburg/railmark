@@ -295,6 +295,11 @@ library — but the heuristics and the vocabulary are pdfannots'. It is MIT-lice
 RailMark. If you want annotation extraction without the .NET dependency, or for a workflow
 RailMark does not cover, use it directly.
 
+## Related projects
+
+- [**RailReader2**](https://github.com/sjvrensburg/railreader2) — the PDF viewer for reading at high magnification, where annotations are made and reviewed. RailMark reads its annotations, and its site links back to RailMark.
+- [**RailReader.Core**](https://github.com/sjvrensburg/RailReaderCore) — the library behind RailReader2 that RailMark is built on (PDF rendering, text extraction, layout analysis, annotations).
+
 ## License
 
 MIT
