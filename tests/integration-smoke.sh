@@ -512,6 +512,65 @@ else
     echo "  ok   unparseable --since rejected"
 fi
 
+# --- 11. Unauthored annotations, remove by id, update by id -------------------
+# Viewers often write annotations with no /T (author). Strip it from a markup
+# round with qpdf to reproduce that; without qpdf the section is skipped.
+echo ""
+section "unauthored annotations, --remove-ids, update by id"
+if ! command -v qpdf > /dev/null 2>&1; then
+    echo "  skip qpdf not installed"
+else
+    cat > "${WORK}/un.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"Introduction","type":"highlight","comment":"c","author":"AI Reviewer"},
+ {"page":2,"quote":"No attempt was made","type":"note","comment":"n","author":"AI Reviewer"}]}
+PLAN
+    "${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/un.json" -o "${WORK}/un1.pdf" > /dev/null 2>&1
+    qpdf --qdf --object-streams=disable "${WORK}/un1.pdf" "${WORK}/un1.qdf"
+    sed 's#/T (AI Reviewer)##' "${WORK}/un1.qdf" > "${WORK}/un2.qdf"
+    qpdf "${WORK}/un2.qdf" "${WORK}/un2.pdf" 2> /dev/null || [ $? -eq 3 ]  # 3 = repaired xref, expected after the sed
+    "${RAILMARK[@]}" "${WORK}/un2.pdf" --format json -o - > "${WORK}/un2.json" 2>/dev/null
+    jcheck "markup now has no author" "${WORK}/un2.json" '[.annotations[] | select(.type == "highlight" or .type == "note") | .author] == [null, null]'
+    HL="$(jq -r '.annotations[] | select(.type == "highlight") | .id' "${WORK}/un2.json")"
+    NOTE="$(jq -r '.annotations[] | select(.type == "note") | .id' "${WORK}/un2.json")"
+    CREATED="$(jq -r '.annotations[] | select(.type == "highlight") | .created' "${WORK}/un2.json")"
+
+    # Update by id: no quote, no geometry; id and creation date survive.
+    cat > "${WORK}/upd.json" <<PLAN
+{"entries":[
+ {"page":1,"update":"${HL}","comment":"expanded","color":"#7FBFFF","author":"Stefan"},
+ {"page":2,"update":"${NOTE}","comment":"longer note"},
+ {"page":1,"update":"no-such-id","comment":"x"}]}
+PLAN
+    "${RAILMARK[@]}" "${WORK}/un2.pdf" --apply-markup "${WORK}/upd.json" -o "${WORK}/upd.pdf" \
+        > "${WORK}/upd.out" 2> /dev/null || [ $? -eq 2 ]
+    jcheck "update reports updated"      "${WORK}/upd.out" '.[0].action == "updated" and .[1].action == "updated"'
+    jcheck "unknown id fails the entry"  "${WORK}/upd.out" '.[2].success == false'
+    "${RAILMARK[@]}" "${WORK}/upd.pdf" --format json -o - > "${WORK}/upd.ann.json" 2>/dev/null
+    jcheck "highlight changed in place"  "${WORK}/upd.ann.json" \
+        ".annotations[] | select(.id == \"${HL}\") | .comment == \"expanded\" and .author == \"Stefan\" and .color == \"#7FBFFF\" and .created == \"${CREATED}\""
+    jcheck "note rewritten, not duplicated" "${WORK}/upd.ann.json" \
+        '([.annotations[] | select(.type == "note")] | length == 1) and ([.annotations[] | select(.type == "note")][0].comment == "longer note")'
+    jcheck "nothing else added"          "${WORK}/upd.ann.json" '.annotations | length == 6'
+
+    # --replace-unauthored / --replace-author "" / --remove-ids
+    echo '{"entries":[]}' > "${WORK}/empty.json"
+    "${RAILMARK[@]}" "${WORK}/un2.pdf" --apply-markup "${WORK}/empty.json" --replace-unauthored \
+        -o "${WORK}/rm1.pdf" > /dev/null 2> "${WORK}/rm1.err"
+    check "unauthored removal reported" "${WORK}/rm1.err" "Removed 2 earlier annotation(s) with no author"
+    "${RAILMARK[@]}" "${WORK}/rm1.pdf" --format json -o - > "${WORK}/rm1.json" 2>/dev/null
+    jcheck "only authored annotations remain" "${WORK}/rm1.json" '(.annotations | length == 4) and all(.annotations[]; .author == "fixture")'
+    "${RAILMARK[@]}" "${WORK}/un2.pdf" --apply-markup "${WORK}/empty.json" --replace-author "" \
+        -o "${WORK}/rm2.pdf" > /dev/null 2> "${WORK}/rm2.err"
+    check "--replace-author \"\" means unauthored" "${WORK}/rm2.err" "Removed 2 earlier annotation(s) with no author"
+    "${RAILMARK[@]}" "${WORK}/un2.pdf" --apply-markup "${WORK}/empty.json" --remove-ids "${HL},no-such-id" \
+        -o "${WORK}/rm3.pdf" > /dev/null 2> "${WORK}/rm3.err"
+    check "id removal reported"       "${WORK}/rm3.err" "Removed 1 earlier annotation(s) named by --remove-ids"
+    check "unknown id warned"         "${WORK}/rm3.err" "no annotation with id no-such-id"
+    "${RAILMARK[@]}" "${WORK}/rm3.pdf" --format json -o - > "${WORK}/rm3.json" 2>/dev/null
+    jcheck "only the named annotation removed" "${WORK}/rm3.json" '.annotations | length == 5'
+fi
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

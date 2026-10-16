@@ -248,3 +248,8 @@ To replace a previous round of your markup rather than add to it — say, after 
 revised the document, or when you'd drop some earlier entries — apply the new plan with
 `--replace-author "AI Reviewer"` (or the `author` your plan uses). That first removes every
 existing annotation by that author, leaving everyone else's untouched.
+
+To change a human reviewer's annotation instead — reword it, recolour it, give it an author —
+use an `update` entry with its `id` from `--format json`; it keeps the annotation's position and
+works for any type, notes and ink included. `--replace-unauthored` and `--remove-ids` clear
+annotations that have no author, or particular ones. See the schema reference.

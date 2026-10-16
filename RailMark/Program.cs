@@ -35,6 +35,8 @@ string? markupPlanPath = null;
 bool dryRun = false;
 bool inPlace = false;
 string? replaceAuthor = null;
+bool replaceUnauthored = false;
+var removeIds = new List<string>();
 bool jsonFormat = false;
 string? authorArg = null;
 string? excludeAuthorArg = null;
@@ -103,6 +105,12 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--replace-author" when i + 1 < args.Length:
             replaceAuthor = args[++i];
+            break;
+        case "--replace-unauthored":
+            replaceUnauthored = true;
+            break;
+        case "--remove-ids" when i + 1 < args.Length:
+            removeIds.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
             break;
         case "--accelerator" when i + 1 < args.Length:
             var acceleratorArg = args[++i];
@@ -189,9 +197,9 @@ if (inPlace && markupPlanPath == null)
     return 1;
 }
 
-if (replaceAuthor != null && markupPlanPath == null)
+if ((replaceAuthor != null || replaceUnauthored || removeIds.Count > 0) && markupPlanPath == null)
 {
-    Console.Error.WriteLine("Error: --replace-author is only valid with --apply-markup.");
+    Console.Error.WriteLine("Error: --replace-author, --replace-unauthored and --remove-ids are only valid with --apply-markup.");
     return 1;
 }
 
@@ -276,11 +284,22 @@ if (markupPlanPath != null)
     }
 
     var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(
-        plan, markupPdf, markupTextService, existing, includeContext: dryRun, replaceAuthor: replaceAuthor);
+        plan, markupPdf, markupTextService, existing, includeContext: dryRun, replaceAuthor: replaceAuthor,
+        replaceUnauthored: replaceUnauthored, removeIds: removeIds);
 
-    if (replaceAuthor != null)
+    if (replaceAuthor != null || replaceUnauthored || removeIds.Count > 0)
+    {
+        var what = string.Join(", ", new[]
+        {
+            replaceAuthor is { Length: > 0 } ? $"by \"{replaceAuthor}\"" : null,
+            replaceAuthor is { Length: 0 } || replaceUnauthored ? "with no author" : null,
+            removeIds.Count > 0 ? "named by --remove-ids" : null,
+        }.Where(t => t != null));
         Console.Error.WriteLine(
-            $"{(dryRun ? "Would remove" : "Removed")} {applyResult.Removed} earlier annotation(s) by \"{replaceAuthor}\".");
+            $"{(dryRun ? "Would remove" : "Removed")} {applyResult.Removed} earlier annotation(s) {what}.");
+        foreach (var id in applyResult.MissingIds)
+            Console.Error.WriteLine($"Warning: --remove-ids: no annotation with id {id}.");
+    }
 
     if (!dryRun)
     {
@@ -746,6 +765,11 @@ static void PrintUsage()
                                by <name> — to revise an earlier round of markup rather than
                                add to it. (Re-applying a plan never duplicates identical
                                markup either way.)
+          --replace-unauthored With --apply-markup, first remove every existing annotation
+                               that has no author (same as --replace-author "").
+          --remove-ids <id,id,...>
+                               With --apply-markup, first remove the annotations with these
+                               ids, as reported by --format json.
           --dry-run            With --apply-markup, resolve and report only; do not write.
                                The report then also shows the text around each match
           --version            Show the railmark version

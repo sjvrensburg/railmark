@@ -19,7 +19,24 @@ public record MarkupEntry
     /// </summary>
     public string? Quote { get; init; }
 
-    public required MarkupType Type { get; init; }
+    /// <summary>Required, except for an <see cref="Update"/> entry, which leaves the type alone.</summary>
+    public MarkupType? Type { get; init; }
+
+    /// <summary>
+    /// The type of a validated entry. Only meaningful when <see cref="Update"/> is not set —
+    /// validation guarantees a type in every other case.
+    /// </summary>
+    [JsonIgnore]
+    internal MarkupType Kind => Type ?? MarkupType.Highlight;
+
+    /// <summary>
+    /// The id of an existing annotation on <see cref="Page"/> — as reported by annotation mode's
+    /// <c>--format json</c> — to change in place. Only <see cref="Comment"/>, <see cref="Color"/>
+    /// and <see cref="Author"/> are applied, and the annotation keeps its geometry, id and
+    /// creation date; the quote, type and context are not consulted. Works for every annotation
+    /// type, including ones RailMark cannot create.
+    /// </summary>
+    public string? Update { get; init; }
 
     /// <summary>Maps to Annotation.Contents for markup types, or TextNoteAnnotation.Text for notes.</summary>
     public string? Comment { get; init; }

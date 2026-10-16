@@ -6,8 +6,14 @@ using RailReader.Core.Services;
 
 namespace RailMark.Services;
 
-public record MarkupEntryResult(int Page, string? Quote, MarkupType Type, bool Success, string? Error, int SpanCount = 0)
+public record MarkupEntryResult(
+    int Page, string? Quote, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MarkupType? Type,
+    bool Success, string? Error, int SpanCount = 0)
 {
+    /// <summary>The id of the annotation an <c>update</c> entry targeted, echoed from the plan.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Update { get; init; }
+
     /// <summary>How many times the quote occurs on the page, before any context filtering.</summary>
     public int MatchCount { get; init; }
 
@@ -43,8 +49,11 @@ public sealed class MarkupPlanApplyResult
 {
     public List<MarkupEntryResult> Entries { get; } = [];
 
-    /// <summary>Annotations removed up front because their author was named for replacement.</summary>
+    /// <summary>Annotations removed up front (by author, for lacking one, or by id).</summary>
     public int Removed { get; set; }
+
+    /// <summary>Ids named for removal that matched no annotation.</summary>
+    public List<string> MissingIds { get; } = [];
 
     public bool AllSucceeded => Entries.All(e => e.Success);
 }
@@ -95,8 +104,11 @@ public static class MarkupPlanService
     /// <param name="includeContext">Report the text around each match (for dry runs).</param>
     /// <param name="replaceAuthor">
     /// Remove every existing annotation by this author before applying — for revising an earlier
-    /// round of markup rather than adding to it.
+    /// round of markup rather than adding to it. An empty name means the same as
+    /// <paramref name="replaceUnauthored"/>.
     /// </param>
+    /// <param name="replaceUnauthored">Remove every existing annotation that has no author.</param>
+    /// <param name="removeIds">Remove the annotations with these ids (and the tail of any that continue over a page break).</param>
     public static (AnnotationFile file, MarkupPlanApplyResult result) Resolve(
         MarkupPlan plan,
         IPdfService pdf,
@@ -104,10 +116,16 @@ public static class MarkupPlanService
         AnnotationFile? existing = null,
         string? password = null,
         bool includeContext = false,
-        string? replaceAuthor = null)
+        string? replaceAuthor = null,
+        bool replaceUnauthored = false,
+        IReadOnlyCollection<string>? removeIds = null)
     {
         var file = existing ?? new AnnotationFile();
-        var removed = replaceAuthor is null ? 0 : RemoveByAuthor(file, replaceAuthor);
+        var missingIds = new List<string>();
+        var removed = Remove(file, replaceAuthor, replaceUnauthored, removeIds, missingIds);
+        var removalHint = replaceAuthor != null || replaceUnauthored || removeIds is { Count: > 0 }
+            ? " (it may have been removed by --replace-author, --replace-unauthored or --remove-ids)."
+            : ".";
         var pages = new Dictionary<int, (NormalizedText Text, IReadOnlyList<CharBox> Chars)>();
         (NormalizedText Text, IReadOnlyList<CharBox> Chars) Page(int pageIndex)
         {
@@ -125,6 +143,15 @@ public static class MarkupPlanService
         var results = new MarkupEntryResult?[plan.Entries.Count];
         var placements = new List<Placement>?[plan.Entries.Count];
         var replyAnchors = new Annotation?[plan.Entries.Count];
+        var updateTargets = new Annotation?[plan.Entries.Count];
+
+        string MissingAnnotation(string id, int entryPage, int pageIndex)
+        {
+            var elsewhere = file.Pages.FirstOrDefault(p => p.Value.Any(a => a.NativeId == id));
+            return elsewhere.Value is not null
+                ? $"Annotation {id} is on page {elsewhere.Key + 1}, not page {entryPage}."
+                : $"No annotation with id {id} on page {entryPage}" + removalHint;
+        }
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
@@ -142,16 +169,33 @@ public static class MarkupPlanService
                 continue;
             }
 
+            if (entry.Update is { } updateId)
+            {
+                var target = file.Pages.GetValueOrDefault(pageIndex)?.FirstOrDefault(a => a.NativeId == updateId);
+                if (target is null)
+                {
+                    results[index] = Failure(entry, MissingAnnotation(updateId, entry.Page, pageIndex));
+                    continue;
+                }
+
+                // Nothing to locate: the annotation is changed where it stands.
+                updateTargets[index] = target;
+                results[index] = new MarkupEntryResult(entry.Page, null, null, true, null)
+                {
+                    Update = updateId,
+                    Context = includeContext
+                        ? $"update the {AnnotationJsonBuilder.TypeName(target)} by {target.Author ?? "unknown author"}"
+                        : null,
+                };
+                continue;
+            }
+
             if (entry.InReplyTo is { } parentId)
             {
                 var parent = file.Pages.GetValueOrDefault(pageIndex)?.FirstOrDefault(a => a.NativeId == parentId);
                 if (parent is null)
                 {
-                    var elsewhere = file.Pages.FirstOrDefault(p => p.Value.Any(a => a.NativeId == parentId));
-                    results[index] = Failure(entry, elsewhere.Value is not null
-                        ? $"Annotation {parentId} is on page {elsewhere.Key + 1}, not page {entry.Page}."
-                        : $"No annotation with id {parentId} on page {entry.Page}"
-                          + (replaceAuthor is null ? "." : $" (it may have been removed by --replace-author \"{replaceAuthor}\")."));
+                    results[index] = Failure(entry, MissingAnnotation(parentId, entry.Page, pageIndex));
                     continue;
                 }
 
@@ -255,6 +299,12 @@ public static class MarkupPlanService
         for (int index = 0; index < plan.Entries.Count; index++)
         {
             var entry = plan.Entries[index];
+            if (updateTargets[index] is { } updateTarget)
+            {
+                results[index] = ApplyUpdate(entry, updateTarget, index, run, results[index]!);
+                continue;
+            }
+
             if (replyAnchors[index] is { } anchor)
             {
                 var pageIndex = entry.Page - 1;
@@ -278,7 +328,7 @@ public static class MarkupPlanService
             // A note is a single marker, pinned beside where the quote starts; markup covers
             // every part, with the comment carried by the first alone so it isn't repeated.
             var actions = new List<string>();
-            int partsToBuild = entry.Type == MarkupType.Note ? 1 : entryPlacements.Count;
+            int partsToBuild = entry.Kind == MarkupType.Note ? 1 : entryPlacements.Count;
             string? headId = null;
             int? conflict = null;
             for (int part = 0; part < partsToBuild && conflict is null; part++)
@@ -335,21 +385,89 @@ public static class MarkupPlanService
         }
 
         var result = new MarkupPlanApplyResult { Removed = removed };
+        result.MissingIds.AddRange(missingIds);
         result.Entries.AddRange(results!);
         return (file, result);
     }
 
     /// <summary>
-    /// Removes every annotation by <paramref name="author"/>. Emptied pages keep their (now empty)
-    /// list rather than losing the key: the PDF writer only reconciles pages present in the file,
-    /// so a dropped key would leave the old annotations in the document.
+    /// Removes the annotations the caller named: every one by <paramref name="author"/> (an empty
+    /// name, like <paramref name="unauthored"/>, selects those with no author) and every one with
+    /// an id in <paramref name="ids"/>. Emptied pages keep their (now empty) list rather than
+    /// losing the key: the PDF writer only reconciles pages present in the file, so a dropped key
+    /// would leave the old annotations in the document.
     /// </summary>
-    private static int RemoveByAuthor(AnnotationFile file, string author)
+    private static int Remove(
+        AnnotationFile file, string? author, bool unauthored, IReadOnlyCollection<string>? ids, List<string> missingIds)
     {
+        unauthored |= author is { Length: 0 };
         int removed = 0;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var annotations in file.Pages.Values)
-            removed += annotations.RemoveAll(a => string.Equals(a.Author, author, StringComparison.Ordinal));
+        {
+            removed += annotations.RemoveAll(a =>
+            {
+                if (author is { Length: > 0 } && string.Equals(a.Author, author, StringComparison.Ordinal)) return true;
+                if (unauthored && string.IsNullOrEmpty(a.Author)) return true;
+                if (ids is null || a.NativeId is not { } id) return false;
+                // The tail of a markup that runs over a page break goes with its head.
+                var head = ContinuationMarkup.HeadOf(a) ?? id;
+                if (!ids.Contains(head, StringComparer.Ordinal)) return false;
+                seen.Add(head);
+                return true;
+            });
+        }
+        if (ids != null)
+            missingIds.AddRange(ids.Where(id => !seen.Contains(id)));
         return removed;
+    }
+
+    /// <summary>
+    /// Changes the comment, colour and author of an existing annotation where it stands. A
+    /// replacement strikeout keeps its "Replace with:" text and takes the new comment after it.
+    /// </summary>
+    private static MarkupEntryResult ApplyUpdate(
+        MarkupEntry entry, Annotation target, int entryIndex, RunState run, MarkupEntryResult result)
+    {
+        string? contents = entry.Comment is null ? null
+            : ReplacementMarkup.TryParse(target, out var replacement, out _)
+                ? ReplacementMarkup.FormatContents(replacement, entry.Comment)
+                : entry.Comment;
+        bool changeContents = contents is not null
+            && NormalizeContents(target.EffectiveContents) != NormalizeContents(contents);
+        bool changeColor = entry.Color is not null
+            && !string.Equals(target.Color, entry.Color, StringComparison.OrdinalIgnoreCase);
+        bool changeAuthor = entry.Author is not null
+            && !string.Equals(target.Author, entry.Author, StringComparison.Ordinal);
+
+        run.Claimed.Add(target);
+        if (!changeContents && !changeColor && !changeAuthor)
+            return result with { Action = ActionUnchanged };
+
+        if (run.Touched.TryGetValue(target, out var earlier) && earlier != entryIndex)
+            return result with
+            {
+                Success = false,
+                Error = $"Conflicts with entry {earlier + 1} of this plan, which already changed this annotation. "
+                        + "Merge them into one entry.",
+            };
+
+        if (changeContents)
+        {
+            target.Contents = contents;
+            if (target is TextNoteAnnotation note)
+                note.Text = contents!;
+        }
+        if (changeColor)
+        {
+            target.Color = entry.Color;
+            // The reader's faithful colour components would otherwise mask the new hex colour.
+            target.ColorComponents = null;
+        }
+        if (changeAuthor)
+            target.Author = entry.Author;
+        run.Touched[target] = entryIndex;
+        return result with { Action = ActionUpdated };
     }
 
     /// <summary>What this run has done so far, for telling its own work from what pre-existed.</summary>
@@ -540,22 +658,36 @@ public static class MarkupPlanService
     /// <summary>Checks the fields that only make sense for some types; null when the entry is valid.</summary>
     private static string? Validate(MarkupEntry entry)
     {
+        if (entry.Update != null)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Update))
+                return "update must be the id of an existing annotation.";
+            if (entry.InReplyTo != null || entry.Replacement != null)
+                return "An update changes only comment, color and author; inReplyTo and replacement cannot be changed.";
+            if (entry.Comment is null && entry.Color is null && entry.Author is null)
+                return "An update needs at least one of comment, color or author to change.";
+            return null;
+        }
+
+        if (entry.Type is null)
+            return "type is required (only an entry with update may omit it).";
+
         if (string.IsNullOrWhiteSpace(entry.Quote))
         {
             if (entry.InReplyTo is null)
                 return "quote is required (it may be omitted only by a note replying to an annotation via inReplyTo).";
-            if (entry.Type != MarkupType.Note)
-                return $"A reply without a quote must be a note (this entry is {entry.Type.ToString().ToLowerInvariant()}).";
+            if (entry.Kind != MarkupType.Note)
+                return $"A reply without a quote must be a note (this entry is {entry.Kind.ToString().ToLowerInvariant()}).";
             if (entry.Occurrence != null || entry.ContextBefore != null || entry.ContextAfter != null)
                 return "occurrence, contextBefore and contextAfter need a quote to apply to.";
         }
 
-        if (entry.Type == MarkupType.Replace && string.IsNullOrEmpty(entry.Replacement))
+        if (entry.Kind == MarkupType.Replace && string.IsNullOrEmpty(entry.Replacement))
             return "A replace entry needs a non-empty replacement (use strikeout to suggest a deletion).";
         if (entry.Replacement != null && entry.Replacement.Replace("\r\n", "\n").Contains("\n\n"))
             return "replacement must not contain a blank line (it separates the replacement from the comment when read back).";
-        if (entry.Type != MarkupType.Replace && entry.Replacement != null)
-            return $"replacement is only valid with type replace (this entry is {entry.Type.ToString().ToLowerInvariant()}).";
+        if (entry.Kind != MarkupType.Replace && entry.Replacement != null)
+            return $"replacement is only valid with type replace (this entry is {entry.Kind.ToString().ToLowerInvariant()}).";
         return null;
     }
 
@@ -668,12 +800,12 @@ public static class MarkupPlanService
     /// </summary>
     private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects, string? headId)
     {
-        var type = entry.Type == MarkupType.Replace ? MarkupType.Strikeout : entry.Type;
+        var type = entry.Kind == MarkupType.Replace ? MarkupType.Strikeout : entry.Kind;
         var annotation = BuildTextMarkup(type, rects);
         annotation.Subject = ContinuationMarkup.Subject;
         if (headId != null)
             annotation.NativeId = ContinuationMarkup.NewId(headId);
-        annotation.Color = entry.Color ?? DefaultColors[entry.Type];
+        annotation.Color = entry.Color ?? DefaultColors[entry.Kind];
         annotation.Author = entry.Author ?? "AI Reviewer";
         annotation.Source = AnnotationSource.RailReader;
         return annotation;
@@ -682,10 +814,10 @@ public static class MarkupPlanService
     private static Annotation BuildAnnotation(
         MarkupEntry entry, List<RectF> rects, IReadOnlyList<CharBox> chars, (double Width, double Height) page)
     {
-        var color = entry.Color ?? DefaultColors[entry.Type];
+        var color = entry.Color ?? DefaultColors[entry.Kind];
         var author = entry.Author ?? "AI Reviewer";
 
-        if (entry.Type == MarkupType.Note)
+        if (entry.Kind == MarkupType.Note)
         {
             // Built at its ideal spot, beside the last line of the quote; Merge moves it clear of
             // other notes once it knows the note is new.
@@ -701,8 +833,8 @@ public static class MarkupPlanService
             };
         }
 
-        var annotation = BuildTextMarkup(entry.Type, rects);
-        if (entry.Type == MarkupType.Replace)
+        var annotation = BuildTextMarkup(entry.Kind, rects);
+        if (entry.Kind == MarkupType.Replace)
         {
             annotation.Subject = ReplacementMarkup.Subject;
             annotation.Contents = ReplacementMarkup.FormatContents(entry.Replacement!, entry.Comment);
