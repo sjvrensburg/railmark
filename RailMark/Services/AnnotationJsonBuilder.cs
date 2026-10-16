@@ -27,6 +27,8 @@ public sealed record AnnotationRecord
     public string? Comment { get; init; }
     public string? Replacement { get; init; }
     public string? Color { get; init; }
+    /// <summary>The annotation's /CA, rounded to two places (it is stored as an 8-bit alpha).</summary>
+    public float? Opacity { get; init; }
     public string? Author { get; init; }
     public string? Heading { get; init; }
     public string? InReplyTo { get; init; }
@@ -110,6 +112,7 @@ public class AnnotationJsonBuilder(
                 Comment = NullIfEmpty(comment),
                 Replacement = replacement,
                 Color = annotation.Color,
+                Opacity = MathF.Round(annotation.Opacity, 2),
                 Author = NullIfEmpty(annotation.Author),
                 Heading = headings.TitleOf(headings.KeyFor(page, HeadingIndex.SortY(annotation))),
                 InReplyTo = NullIfEmpty(ReplyMarkup.ParentOf(annotation)),

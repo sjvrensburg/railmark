@@ -571,6 +571,60 @@ PLAN
     jcheck "only the named annotation removed" "${WORK}/rm3.json" '.annotations | length == 5'
 fi
 
+# --- 12. Opacity ---------------------------------------------------------------
+# /CA is written by the PDF writer and read back by the reader, so this proves the
+# value survives a real write/read — including the 8-bit alpha rounding.
+echo ""
+section "opacity (/CA)"
+cat > "${WORK}/op.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"Introduction","type":"highlight","comment":"default"},
+ {"page":1,"quote":"Methods","type":"highlight","comment":"explicit","opacity":0.6},
+ {"page":2,"quote":"No attempt was made","type":"underline","comment":"underline"},
+ {"page":1,"quote":"Introduction","type":"highlight","opacity":2}]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/op.json" -o "${WORK}/op.pdf" \
+    > "${WORK}/op.out" 2> /dev/null || [ $? -eq 2 ]
+jcheck "out-of-range opacity fails the entry" "${WORK}/op.out" '.[3].success == false'
+"${RAILMARK[@]}" "${WORK}/op.pdf" --format json -o - > "${WORK}/op.ann.json" 2>/dev/null
+jcheck "highlight defaults to 0.35"   "${WORK}/op.ann.json" '[.annotations[] | select(.comment == "default")][0].opacity == 0.35'
+jcheck "explicit opacity round-trips" "${WORK}/op.ann.json" '[.annotations[] | select(.comment == "explicit")][0].opacity == 0.6'
+jcheck "underline stays opaque"       "${WORK}/op.ann.json" '[.annotations[] | select(.comment == "underline")][0].opacity == 1'
+
+# Re-applying is unchanged; a changed opacity updates in place; --opacity sets the default.
+cat > "${WORK}/op2.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"Introduction","type":"highlight","comment":"default"},
+ {"page":1,"quote":"Methods","type":"highlight","comment":"explicit","opacity":0.6}]}
+PLAN
+"${RAILMARK[@]}" "${WORK}/op.pdf" --apply-markup "${WORK}/op2.json" -o "${WORK}/op2.pdf" > "${WORK}/op2.out" 2> /dev/null
+jcheck "re-apply is unchanged" "${WORK}/op2.out" 'all(.[]; .action == "unchanged")'
+sed -i 's/"opacity":0.6/"opacity":0.2/' "${WORK}/op2.json"
+"${RAILMARK[@]}" "${WORK}/op.pdf" --apply-markup "${WORK}/op2.json" -o "${WORK}/op3.pdf" > "${WORK}/op3.out" 2> /dev/null
+jcheck "changed opacity updates in place" "${WORK}/op3.out" '.[0].action == "unchanged" and .[1].action == "updated"'
+"${RAILMARK[@]}" "${WORK}/op3.pdf" --format json -o - > "${WORK}/op3.ann.json" 2>/dev/null
+jcheck "new opacity stored, no duplicate" "${WORK}/op3.ann.json" \
+    '([.annotations[] | select(.comment == "explicit")] | length == 1) and ([.annotations[] | select(.comment == "explicit")][0].opacity == 0.2)'
+
+# update by id changes opacity of any annotation, leaving the rest alone
+ID="$(jq -r '.annotations[] | select(.comment == "default") | .id' "${WORK}/op3.ann.json")"
+echo "{\"entries\":[{\"page\":1,\"update\":\"${ID}\",\"opacity\":0.5}]}" > "${WORK}/op4.json"
+"${RAILMARK[@]}" "${WORK}/op3.pdf" --apply-markup "${WORK}/op4.json" -o "${WORK}/op4.pdf" > "${WORK}/op4.out" 2> /dev/null
+jcheck "update by id reports updated" "${WORK}/op4.out" '.[0].action == "updated"'
+"${RAILMARK[@]}" "${WORK}/op4.pdf" --format json -o - > "${WORK}/op4.ann.json" 2>/dev/null
+jcheck "update changed the opacity" "${WORK}/op4.ann.json" '[.annotations[] | select(.comment == "default")][0].opacity == 0.5'
+
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/op2.json" --opacity 0.8 -o "${WORK}/op5.pdf" > /dev/null 2>&1
+"${RAILMARK[@]}" "${WORK}/op5.pdf" --format json -o - > "${WORK}/op5.ann.json" 2>/dev/null
+jcheck "--opacity is the default, entry wins" "${WORK}/op5.ann.json" \
+    '([.annotations[] | select(.comment == "default")][0].opacity == 0.8) and ([.annotations[] | select(.comment == "explicit")][0].opacity == 0.2)'
+if "${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/op2.json" --opacity 3 -o "${WORK}/op6.pdf" > /dev/null 2>&1; then
+    echo "  FAIL --opacity 3 should be rejected" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   --opacity out of range rejected"
+fi
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

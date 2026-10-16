@@ -38,6 +38,8 @@
       "page": 5,
       "quote": "the results generalize across all populations studied",
       "type": "highlight",
+      "color": "#FF0000",
+      "opacity": 0.5,
       "comment": "Strong claim; the study only covers a single-country sample — consider softening."
     },
     {
