@@ -1104,6 +1104,35 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
+    public void Failed_Update_Echoes_The_Id()
+    {
+        var (_, result) = Apply([new() { Page = 1, Update = "missing", Comment = "x" }]);
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Equal("missing", result.Entries[0].Update);
+    }
+
+    [Fact]
+    public void Update_Carries_Color_And_Author_To_The_Continuation_Tail()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "head", Color = "#FFFF00" });
+        var tail = new HighlightAnnotation
+        {
+            NativeId = ContinuationMarkup.NewId("head"), Subject = ContinuationMarkup.Subject, Color = "#FFFF00",
+        };
+        existing.Pages[1] = [tail];
+
+        Apply([new() { Page = 1, Update = "head", Color = "#7FBFFF", Author = "Stefan", Comment = "c" }], existing);
+
+        Assert.Equal(("#7FBFFF", "Stefan"), (tail.Color, tail.Author));
+        Assert.Null(tail.Contents);
+    }
+
+    [Fact]
+    public void Kind_Throws_For_An_Entry_Without_A_Type()
+        => Assert.Throws<InvalidOperationException>(() => new MarkupEntry { Page = 1, Update = "x" }.Kind);
+
+    [Fact]
     public void Entry_Without_Type_Or_Update_Is_Rejected()
     {
         var (_, result) = Apply([new() { Page = 1, Quote = "brown fox" }]);

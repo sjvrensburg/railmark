@@ -24,10 +24,11 @@ public record MarkupEntry
 
     /// <summary>
     /// The type of a validated entry. Only meaningful when <see cref="Update"/> is not set —
-    /// validation guarantees a type in every other case.
+    /// validation guarantees a type in every other case, so reaching this without one is a bug.
     /// </summary>
     [JsonIgnore]
-    internal MarkupType Kind => Type ?? MarkupType.Highlight;
+    internal MarkupType Kind => Type
+        ?? throw new InvalidOperationException("Entry has no type; only an update entry may omit it.");
 
     /// <summary>
     /// The id of an existing annotation on <see cref="Page"/> — as reported by annotation mode's

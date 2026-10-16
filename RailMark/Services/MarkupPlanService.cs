@@ -301,7 +301,7 @@ public static class MarkupPlanService
             var entry = plan.Entries[index];
             if (updateTargets[index] is { } updateTarget)
             {
-                results[index] = ApplyUpdate(entry, updateTarget, index, run, results[index]!);
+                results[index] = ApplyUpdate(entry, updateTarget, file, index, run, results[index]!);
                 continue;
             }
 
@@ -435,7 +435,7 @@ public static class MarkupPlanService
     /// replacement strikeout keeps its "Replace with:" text and takes the new comment after it.
     /// </summary>
     private static MarkupEntryResult ApplyUpdate(
-        MarkupEntry entry, Annotation target, int entryIndex, RunState run, MarkupEntryResult result)
+        MarkupEntry entry, Annotation target, AnnotationFile file, int entryIndex, RunState run, MarkupEntryResult result)
     {
         string? contents = entry.Comment is null ? null
             : ReplacementMarkup.TryParse(target, out var replacement, out _)
@@ -474,6 +474,24 @@ public static class MarkupPlanService
         }
         if (changeAuthor)
             target.Author = entry.Author;
+
+        // A markup that runs over a page break is two annotations; the tail carries no comment, but
+        // it shares the head's colour and author, and pairing falls back on the author.
+        if ((changeColor || changeAuthor) && target.NativeId is { } headId)
+        {
+            foreach (var tail in file.Pages.Values.SelectMany(a => a)
+                         .Where(a => ContinuationMarkup.Is(a) && ContinuationMarkup.HeadOf(a) == headId))
+            {
+                if (changeColor)
+                {
+                    tail.Color = entry.Color;
+                    tail.ColorComponents = null;
+                }
+                if (changeAuthor)
+                    tail.Author = entry.Author;
+            }
+        }
+
         run.Touched[target] = entryIndex;
         return result with { Action = ActionUpdated };
     }
@@ -618,7 +636,7 @@ public static class MarkupPlanService
         };
 
     private static MarkupEntryResult Failure(MarkupEntry entry, string error)
-        => new(entry.Page, entry.Quote, entry.Type, false, error);
+        => new(entry.Page, entry.Quote, entry.Type, false, error) { Update = entry.Update };
 
     /// <summary>
     /// Picks the match an entry refers to. Context narrows the candidates, <c>occurrence</c> then

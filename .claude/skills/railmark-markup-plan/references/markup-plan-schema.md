@@ -71,7 +71,7 @@ and case-sensitive; other authors' annotations are never touched.
 Annotations with **no author** (many viewers write none) are selected with `--replace-unauthored`
 (or `--replace-author ""`). To remove particular annotations, pass their ids from `--format json`:
 `--remove-ids <id,id,...>` (a markup that runs over a page break is removed with its tail; an id
-that matches nothing is warned about). Replies to a removed annotation are not removed with it.
+that matches nothing is warned about). Replies to a removed annotation are **not** removed with it: they stay as ordinary top-level notes, and a later `inReplyTo` to the removed id fails. Remove them too (by id) if you want the thread gone.
 
 ## Updating an existing annotation
 
@@ -91,6 +91,12 @@ and freehand — without looking up a quote or recomputing geometry:
   annotation in a plan conflict, as in "Re-applying a plan".
 - Only annotations that carry an id can be targeted: a PDF annotation with no `/NM` reports
   `"id": null` in the JSON.
+- A markup that runs over a page break is two annotations: a colour or author change reaches the
+  tail on the next page too (found through its `/NM` link); the tail has no comment of its own.
+- **Changing the `author` changes how re-applying finds the annotation.** Dedupe matches on author,
+  and a reply note on parent + author + text, so a plan that still names the old author will add a
+  second annotation (or reply) rather than match the renamed one. Update the plan's `author` too.
+- A failed `update` entry still echoes its `update` id, so results can be matched by id.
 - The result has `"action": "updated"` (or `unchanged` if nothing differed) and echoes `update`.
 
 ## Quote rules
