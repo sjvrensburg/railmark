@@ -23,13 +23,14 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 |-----------|--------|----------|-------|
 | `page`    | int    | yes      | **1-based physical PDF page index** — the Nth page in the file, counting the cover as page 1 (this is what a PDF reader shows in its total-page count, and what `railmark --export`'s page breaks are numbered with). It is **not** the PDF's internal 0-based page index, and it is **not** the printed page label — a document with roman-numeral front matter (`i, ii, iii, …`) followed by an Arabic restart at Chapter 1 has printed labels that don't match physical position at all, and can't be expressed as an integer for the front matter. Always get `page` by counting from `--export`'s output, never from a page number printed on the page itself. For a quote that runs over a page break, `page` is the page it **starts** on. |
 | `quote`   | string | yes, except for a reply note | Exact, verbatim, contiguous substring of the PDF's extracted text on that page. See "Quote rules" below. For the text-markup types it is the text that gets marked. For a `note` it only says where the icon goes — beside the quoted line — so quote the opening words of the paragraph the note is about. May be omitted only by a `note` with `inReplyTo` — see "Replies". |
-| `type`    | string | yes      | One of: `highlight`, `underline`, `strikeout`, `squiggly`, `replace`, `note` (case-insensitive). |
+| `type`    | string | yes, except for `update` | One of: `highlight`, `underline`, `strikeout`, `squiggly`, `replace`, `note` (case-insensitive). |
 | `comment` | string | no       | For `highlight`/`underline`/`strikeout`/`squiggly`/`replace`, becomes the annotation's popup comment. For `note`, becomes the note body text itself — a `note` entry with no comment produces an empty sticky note, which is rarely useful. `note` is placed as a sticky-note icon just outside the text column, level with the quoted line (in the nearer margin, or the gutter of a two-column page), and below any note already there — it does **not** attach to the quoted text the way the other types do, which is why a note is for a remark about a passage and a highlight with a `comment` for a remark about particular words (see the skill's editorial conventions). |
 | `replacement` | string | for `replace` | The text that should replace the quote. Required (non-empty, and without a blank line in it) for `replace`, and rejected on every other type. To suggest deleting text outright, use `strikeout`. |
 | `occurrence` | int | no | When the quote occurs more than once on the page: which match to mark, 1-based in reading order (counted among the matches that also satisfy `contextBefore`/`contextAfter`, if given). See "Repeated quotes". |
 | `contextBefore` | string | no | Text that must immediately precede the quote, to pick one of several matches. |
 | `contextAfter`  | string | no | Text that must immediately follow the quote, to pick one of several matches. |
 | `inReplyTo` | string | no | The `id` of an existing annotation on the same page, as reported by `railmark <pdf> --format json`. Makes this entry a reply to that annotation. See "Replies". |
+| `update` | string | no | The `id` of an existing annotation on `page`, as reported by `--format json`. Changes that annotation in place instead of adding one — see "Updating an existing annotation". |
 | `color`   | string | no       | Hex color (`#RRGGBB`). If omitted, a type-specific default from RailReader2's annotation palette is used: highlight `#FFFF00`, underline `#00A000`, strikeout `#FF0000`, squiggly `#00A000`, note `#FFFF00`, replace `#0066FF`. The full palette is yellow `#FFFF00`, green `#00A000`, red `#FF0000`, blue `#0066FF`, black `#000000` — prefer these when overriding, so the colours can be reproduced in RailReader2. |
 | `author`  | string | no       | Defaults to `"AI Reviewer"` if omitted. |
 
@@ -66,6 +67,37 @@ To **revise** an earlier round of markup rather than build on it — drop entrie
 stand behind — pass `--replace-author "AI Reviewer"` (or whichever author the round used). Every
 existing annotation by that author is removed first, then the plan is applied. The match is exact
 and case-sensitive; other authors' annotations are never touched.
+
+Annotations with **no author** (many viewers write none) are selected with `--replace-unauthored`
+(or `--replace-author ""`). To remove particular annotations, pass their ids from `--format json`:
+`--remove-ids <id,id,...>` (a markup that runs over a page break is removed with its tail; an id
+that matches nothing is warned about). Replies to a removed annotation are **not** removed with it: they stay as ordinary top-level notes, and a later `inReplyTo` to the removed id fails. Remove them too (by id) if you want the thread gone.
+
+## Updating an existing annotation
+
+`update` changes an annotation that already exists — whoever made it, of any type including notes
+and freehand — without looking up a quote or recomputing geometry:
+
+```json
+{ "page": 17, "update": "<id>", "comment": "Expanded comment text…", "color": "#7FBFFF", "author": "Stefan" }
+```
+
+- Only `comment`, `color` and `author` are applied, and at least one is required. Omit a field to
+  leave it alone; `"comment": ""` clears the comment.
+- The annotation keeps its id, creation date and position. `quote`, `type`, `occurrence` and
+  context are ignored; `inReplyTo` and `replacement` are rejected.
+- A `replace` annotation keeps its `Replace with:` text; `comment` changes the comment after it.
+- `page` must be the page the annotation is on. An unknown id fails the entry; two updates of one
+  annotation in a plan conflict, as in "Re-applying a plan".
+- Only annotations that carry an id can be targeted: a PDF annotation with no `/NM` reports
+  `"id": null` in the JSON.
+- A markup that runs over a page break is two annotations: a colour or author change reaches the
+  tail on the next page too (found through its `/NM` link); the tail has no comment of its own.
+- **Changing the `author` changes how re-applying finds the annotation.** Dedupe matches on author,
+  and a reply note on parent + author + text, so a plan that still names the old author will add a
+  second annotation (or reply) rather than match the renamed one. Update the plan's `author` too.
+- A failed `update` entry still echoes its `update` id, so results can be matched by id.
+- The result has `"action": "updated"` (or `unchanged` if nothing differed) and echoes `update`.
 
 ## Quote rules
 
@@ -158,6 +190,7 @@ Annotation mode shows replies threaded under their parent, and its JSON reports 
 | `action` | On success: `added`, `unchanged` or `updated` (see "Re-applying a plan"). |
 | `endPage` | Present when the quote ran over a page break: the page it ends on. |
 | `inReplyTo` | Echoed for reply entries. |
+| `update` | Echoed for `update` entries; `quote` and `type` are then absent. |
 | `context` | **`--dry-run` only.** The page text around the match, with the match in `[[…]]` — for a split quote, both halves, separated by `‖`. Read it to confirm the quote landed on the passage you meant. |
 
 A human-readable summary, per-failure lines and per-warning lines are printed to **stderr**. Exit code `0` means every entry resolved (and was written, unless `--dry-run` was passed); exit code `2` means one or more entries failed to resolve — well-formed entries are still applied. Exit code `1` is a hard error (bad JSON, missing file, or a write failure) and nothing is written. Warnings do not change the exit code.

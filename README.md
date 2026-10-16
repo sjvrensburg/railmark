@@ -141,6 +141,11 @@ Options:
                        by <name> — to revise an earlier round of markup rather than
                        add to it. (Re-applying a plan never duplicates identical
                        markup either way.)
+  --replace-unauthored With --apply-markup, first remove every existing annotation
+                       that has no author (same as --replace-author "").
+  --remove-ids <id,id,...>
+                       With --apply-markup, first remove the annotations with these
+                       ids, as reported by --format json.
   --dry-run            With --apply-markup, resolve and report only; do not write.
                        The report then also shows the text around each match
   --version            Show the railmark version
@@ -226,7 +231,10 @@ Beyond the basics:
   a reply note needs no quote.
 - **Re-applying is safe.** Markup already present is reported `unchanged` rather than duplicated,
   and a changed comment is `updated` in place. `--replace-author <name>` clears an earlier round
-  first.
+  first; `--replace-unauthored` clears annotations with no author and `--remove-ids` removes
+  particular ones.
+- **Updating in place.** `"update": "<id>"` changes the comment, colour or author of an existing
+  annotation of any type, keeping its position, id and creation date.
 
 See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full schema.
 

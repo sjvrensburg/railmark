@@ -179,7 +179,7 @@ public class MarkupPlanServiceTests
         var path = Path.Combine(dir!.FullName, ".claude", "skills", "railmark-markup-plan", "templates", "example-markup-plan.json");
 
         var plan = JsonSerializer.Deserialize<MarkupPlan>(File.ReadAllText(path), JsonOptions)!;
-        Assert.Equal(Enum.GetValues<MarkupType>().ToHashSet(), plan.Entries.Select(e => e.Type).ToHashSet());
+        Assert.Equal(Enum.GetValues<MarkupType>().ToHashSet(), plan.Entries.Select(e => e.Kind).ToHashSet());
 
         // Against an empty page every entry must fail only for want of its quote or parent.
         var (_, result) = MarkupPlanService.Resolve(
@@ -704,13 +704,14 @@ public class MarkupPlanServiceTests
     // --- Idempotent apply ---
 
     private static (AnnotationFile file, MarkupPlanApplyResult result) Apply(
-        List<MarkupEntry> entries, AnnotationFile? existing = null, string? replaceAuthor = null)
+        List<MarkupEntry> entries, AnnotationFile? existing = null, string? replaceAuthor = null,
+        bool replaceUnauthored = false, IReadOnlyCollection<string>? removeIds = null)
         => MarkupPlanService.Resolve(
             new MarkupPlan { Entries = entries },
             new FakePdfService(pageCount: 1, pageSize: (600, 800)),
             new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps over the lazy dog." }),
             existing,
-            replaceAuthor: replaceAuthor);
+            replaceAuthor: replaceAuthor, replaceUnauthored: replaceUnauthored, removeIds: removeIds);
 
     private static List<MarkupEntry> MixedPlan() =>
     [
@@ -916,6 +917,238 @@ public class MarkupPlanServiceTests
 
         Assert.Equal(0, result.Removed);
         Assert.Single(file.Pages[0]);
+    }
+
+    // --- Unauthored and by-id removal ---
+
+    private static AnnotationFile UnauthoredFile()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { Contents = "no author" },
+            new HighlightAnnotation { Author = "", Contents = "empty author" },
+            new HighlightAnnotation { Author = "Human", Contents = "keep me" },
+        ];
+        existing.Pages[2] = [new TextNoteAnnotation { Text = "unauthored note" }];
+        return existing;
+    }
+
+    [Fact]
+    public void Resolve_Replace_Unauthored_Removes_Only_Annotations_Without_An_Author()
+    {
+        var (file, result) = Apply([], UnauthoredFile(), replaceUnauthored: true);
+
+        Assert.Equal(3, result.Removed);
+        Assert.Equal(["keep me"], file.Pages[0].Select(a => a.Contents));
+        Assert.Empty(file.Pages[2]);
+    }
+
+    [Fact]
+    public void Resolve_Replace_Author_Empty_Means_Unauthored()
+    {
+        var (file, result) = Apply([], UnauthoredFile(), replaceAuthor: "");
+
+        Assert.Equal(3, result.Removed);
+        Assert.Equal(["keep me"], file.Pages[0].Select(a => a.Contents));
+    }
+
+    [Fact]
+    public void Resolve_Remove_Ids_Removes_Named_Annotations_And_Reports_Unknown_Ids()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { NativeId = "a", Contents = "drop" },
+            new HighlightAnnotation { NativeId = "b", Contents = "keep" },
+        ];
+        existing.Pages[1] = [new HighlightAnnotation { NativeId = "a#cont-1", Subject = ContinuationMarkup.Subject }];
+
+        var (file, result) = Apply([], existing, removeIds: ["a", "nope"]);
+
+        Assert.Equal(2, result.Removed);
+        Assert.Equal(["keep"], file.Pages[0].Select(a => a.Contents));
+        Assert.Empty(file.Pages[1]);
+        Assert.Equal(["nope"], result.MissingIds);
+    }
+
+    // --- Update by id ---
+
+    private static AnnotationFile FileWith(params Annotation[] annotations)
+    {
+        var file = new AnnotationFile();
+        file.Pages[0] = [.. annotations];
+        return file;
+    }
+
+    [Fact]
+    public void Update_Changes_Comment_Color_And_Author_In_Place_For_Unauthored_Markup()
+    {
+        var rects = new List<HighlightRect> { new(1f, 2f, 3f, 4f) };
+        var existing = FileWith(new HighlightAnnotation
+        {
+            NativeId = "id-1", Rects = rects, Color = "#FFFF00", ColorComponents = [1f, 1f, 0f], Contents = "old",
+        });
+
+        var (file, result) = Apply(
+            [new() { Page = 1, Update = "id-1", Comment = "new", Color = "#7FBFFF", Author = "Stefan" }], existing);
+
+        Assert.True(result.Entries[0].Success);
+        Assert.Equal("updated", result.Entries[0].Action);
+        Assert.Equal("id-1", result.Entries[0].Update);
+        var highlight = Assert.IsType<HighlightAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.Equal("new", highlight.Contents);
+        Assert.Equal("#7FBFFF", highlight.Color);
+        Assert.Null(highlight.ColorComponents);
+        Assert.Equal("Stefan", highlight.Author);
+        Assert.Equal("id-1", highlight.NativeId);
+        Assert.Same(rects, highlight.Rects);
+    }
+
+    [Fact]
+    public void Update_Rewrites_A_Note_Without_Moving_It()
+    {
+        var existing = FileWith(new TextNoteAnnotation { NativeId = "n", X = 500, Y = 100, Text = "old" });
+
+        var (file, result) = Apply([new() { Page = 1, Update = "n", Comment = "expanded" }], existing);
+
+        Assert.Equal("updated", result.Entries[0].Action);
+        var note = Assert.IsType<TextNoteAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.Equal(("expanded", 500f, 100f), (note.Text, note.X, note.Y));
+    }
+
+    [Fact]
+    public void Update_Works_On_Freehand_And_Ignores_Quote_And_Type()
+    {
+        var existing = FileWith(new FreehandAnnotation { NativeId = "ink", Color = "#FF0000" });
+
+        var (file, result) = Apply(
+            [new() { Page = 1, Update = "ink", Quote = "ignored", Type = MarkupType.Highlight, Color = "#00A000" }], existing);
+
+        Assert.Equal("updated", result.Entries[0].Action);
+        Assert.Equal("#00A000", Assert.Single(file.Pages[0]).Color);
+    }
+
+    [Fact]
+    public void Update_Keeps_The_Replacement_Text_When_Only_The_Comment_Changes()
+    {
+        var existing = FileWith(new StrikeOutAnnotation
+        {
+            NativeId = "r", Subject = ReplacementMarkup.Subject,
+            Contents = ReplacementMarkup.FormatContents("leaps", "old why"),
+        });
+
+        var (file, _) = Apply([new() { Page = 1, Update = "r", Comment = "new why" }], existing);
+
+        var annotation = Assert.Single(file.Pages[0]);
+        Assert.True(ReplacementMarkup.TryParse(annotation, out var replacement, out var comment));
+        Assert.Equal(("leaps", "new why"), (replacement, comment));
+    }
+
+    [Fact]
+    public void Update_With_Identical_Values_Is_Unchanged()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "id", Contents = "same", Color = "#FFFF00", Author = "A" });
+
+        var (_, result) = Apply([new() { Page = 1, Update = "id", Comment = "same", Color = "#ffff00", Author = "A" }], existing);
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+    }
+
+    [Fact]
+    public void Update_Fails_For_Unknown_Id_And_For_An_Id_On_Another_Page()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "id" });
+
+        var (_, result) = Apply(
+            [new() { Page = 1, Update = "missing", Comment = "x" }], existing);
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains("No annotation with id missing", result.Entries[0].Error);
+
+        var (_, other) = MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [new() { Page = 2, Update = "id", Comment = "x" }] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(new Dictionary<int, string>()), existing);
+        Assert.Contains("is on page 1, not page 2", other.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Update_Needs_Something_To_Change_And_Rejects_Reply_And_Replacement()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "id" });
+
+        var (_, result) = Apply(
+        [
+            new() { Page = 1, Update = "id" },
+            new() { Page = 1, Update = "id", Comment = "x", InReplyTo = "p" },
+            new() { Page = 1, Update = "id", Comment = "x", Replacement = "y" },
+        ], existing);
+
+        Assert.All(result.Entries, e => Assert.False(e.Success));
+    }
+
+    [Fact]
+    public void Update_Conflicting_With_An_Earlier_Update_Of_The_Same_Annotation_Fails()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "id", Contents = "old" });
+
+        var (file, result) = Apply(
+        [
+            new() { Page = 1, Update = "id", Comment = "first" },
+            new() { Page = 1, Update = "id", Comment = "second" },
+        ], existing);
+
+        Assert.True(result.Entries[0].Success);
+        Assert.False(result.Entries[1].Success);
+        Assert.Equal("first", Assert.Single(file.Pages[0]).Contents);
+    }
+
+    [Fact]
+    public void Failed_Update_Echoes_The_Id()
+    {
+        var (_, result) = Apply([new() { Page = 1, Update = "missing", Comment = "x" }]);
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Equal("missing", result.Entries[0].Update);
+    }
+
+    [Fact]
+    public void Update_Carries_Color_And_Author_To_The_Continuation_Tail()
+    {
+        var existing = FileWith(new HighlightAnnotation { NativeId = "head", Color = "#FFFF00" });
+        var tail = new HighlightAnnotation
+        {
+            NativeId = ContinuationMarkup.NewId("head"), Subject = ContinuationMarkup.Subject, Color = "#FFFF00",
+        };
+        existing.Pages[1] = [tail];
+
+        Apply([new() { Page = 1, Update = "head", Color = "#7FBFFF", Author = "Stefan", Comment = "c" }], existing);
+
+        Assert.Equal(("#7FBFFF", "Stefan"), (tail.Color, tail.Author));
+        Assert.Null(tail.Contents);
+    }
+
+    [Fact]
+    public void Kind_Throws_For_An_Entry_Without_A_Type()
+        => Assert.Throws<InvalidOperationException>(() => new MarkupEntry { Page = 1, Update = "x" }.Kind);
+
+    [Fact]
+    public void Entry_Without_Type_Or_Update_Is_Rejected()
+    {
+        var (_, result) = Apply([new() { Page = 1, Quote = "brown fox" }]);
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains("type is required", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Update_Entries_Deserialise_Without_A_Type()
+    {
+        var plan = JsonSerializer.Deserialize<MarkupPlan>(
+            """{"entries":[{"page":2,"update":"abc","comment":"c"}]}""", JsonOptions)!;
+
+        Assert.Equal("abc", plan.Entries[0].Update);
+        Assert.Null(plan.Entries[0].Type);
     }
 
     // --- Across a page break ---
