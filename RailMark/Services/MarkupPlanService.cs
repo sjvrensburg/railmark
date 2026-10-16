@@ -494,7 +494,7 @@ public static class MarkupPlanService
         }
         if (changeColor)
         {
-            target.Color = entry.Color;
+            target.Color = entry.Color!;
             // The reader's faithful colour components would otherwise mask the new hex colour.
             target.ColorComponents = null;
         }
@@ -512,7 +512,7 @@ public static class MarkupPlanService
             {
                 if (changeColor)
                 {
-                    tail.Color = entry.Color;
+                    tail.Color = entry.Color!;
                     tail.ColorComponents = null;
                 }
                 if (changeAuthor)
