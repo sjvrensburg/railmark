@@ -973,6 +973,59 @@ public class MarkupPlanServiceTests
         Assert.Equal(["nope"], result.MissingIds);
     }
 
+    // --- Near-duplicate warning ---
+
+    [Fact]
+    public void Added_Markup_Over_The_Same_Text_By_Another_Author_Warns_Near_Duplicate()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Ann" }]);
+        first.Pages[0][0].NativeId = "ann-1";
+
+        var (file, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Bob" }], first);
+
+        Assert.Equal("added", result.Entries[0].Action);
+        Assert.Contains("Near-duplicate of ann-1", result.Entries[0].Warning);
+        Assert.Equal(2, file.Pages[0].Count);
+    }
+
+    [Fact]
+    public void Same_Author_Same_Text_Is_Unchanged_Not_A_Near_Duplicate()
+    {
+        var entry = new MarkupEntry { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Ann" };
+        var (first, _) = Apply([entry]);
+
+        var (_, result) = Apply([entry], first);
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Null(result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Different_Type_Or_Disjoint_Text_Is_Not_A_Near_Duplicate()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Ann" }]);
+
+        var (_, result) = Apply(
+        [
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Underline, Author = "Bob" },
+            new() { Page = 1, Quote = "lazy dog", Type = MarkupType.Highlight, Author = "Bob" },
+        ], first);
+
+        Assert.All(result.Entries, e => Assert.Null(e.Warning));
+    }
+
+    [Fact]
+    public void Two_Entries_Of_One_Run_Are_Not_Near_Duplicates_Of_Each_Other()
+    {
+        var (_, result) = Apply(
+        [
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Ann" },
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Author = "Bob" },
+        ]);
+
+        Assert.All(result.Entries, e => Assert.Null(e.Warning));
+    }
+
     // --- Update by id ---
 
     private static AnnotationFile FileWith(params Annotation[] annotations)

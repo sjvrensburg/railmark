@@ -345,6 +345,7 @@ public static class MarkupPlanService
             int partsToBuild = entry.Kind == MarkupType.Note ? 1 : entryPlacements.Count;
             string? headId = null;
             int? conflict = null;
+            Annotation? nearDuplicate = null;
             for (int part = 0; part < partsToBuild && conflict is null; part++)
             {
                 var pageIndex = entryPlacements[part].PageIndex;
@@ -383,7 +384,10 @@ public static class MarkupPlanService
                     break;
                 }
                 if (part == 0)
+                {
                     headId = outcome.Stored!.NativeId;
+                    nearDuplicate = outcome.NearDuplicateOf;
+                }
                 actions.Add(outcome.Action!);
             }
 
@@ -395,6 +399,8 @@ public static class MarkupPlanService
 
             results[index] = results[index]! with
             {
+                Warning = nearDuplicate is null ? results[index]!.Warning
+                    : string.Join(' ', new[] { results[index]!.Warning, NearDuplicateWarning(nearDuplicate) }.Where(w => w != null)),
                 SpanCount = geometry[index].Sum(rects => rects.Count),
                 Action = actions.All(a => a == ActionUnchanged) ? ActionUnchanged
                     : actions.Contains(ActionAdded) ? ActionAdded
@@ -543,7 +549,10 @@ public static class MarkupPlanService
     /// <param name="Stored">The annotation now on the page — the new one, or the twin it matched.</param>
     /// <param name="ConflictsWith">Set instead of an action: the plan index of an earlier entry
     /// that already put different markup on the same text in this run.</param>
-    private readonly record struct MergeOutcome(string? Action, Annotation? Stored, int? ConflictsWith = null);
+    /// <param name="NearDuplicateOf">Set on an added annotation: a pre-existing one of the same kind that
+    /// covers much the same text, which the plan may have meant to <c>update</c> instead.</param>
+    private readonly record struct MergeOutcome(
+        string? Action, Annotation? Stored, int? ConflictsWith = null, Annotation? NearDuplicateOf = null);
 
     /// <summary>
     /// Adds <paramref name="annotation"/> to its page unless an annotation of the same kind, by the
@@ -578,10 +587,11 @@ public static class MarkupPlanService
                 run.Ideals[note] = new NoteSpot(note.X, note.Y);
                 place(note);
             }
+            var nearDuplicate = FindNearDuplicate(pageAnnotations, annotation, run);
             pageAnnotations.Add(annotation);
             run.Touched[annotation] = entryIndex;
             run.Claimed.Add(annotation);
-            return new MergeOutcome(ActionAdded, annotation);
+            return new MergeOutcome(ActionAdded, annotation, NearDuplicateOf: nearDuplicate);
         }
         run.Claimed.Add(twin);
 
@@ -651,6 +661,49 @@ public static class MarkupPlanService
             _ => false,
         };
     }
+
+    /// <summary>Share of the smaller markup's area that the other covers for it to count as the same text.</summary>
+    private const float NearDuplicateOverlap = 0.5f;
+
+    /// <summary>
+    /// A markup already on the page — not one this run added — of the same kind that covers
+    /// substantially the same text as <paramref name="added"/>, by any author and however the
+    /// lines were split. Dedupe only recognises exact geometry from the same author, so this is
+    /// what notices a re-applied record that differs in author or by a line break.
+    /// </summary>
+    private static Annotation? FindNearDuplicate(List<Annotation> page, Annotation added, RunState run)
+    {
+        if (added is not TextMarkupAnnotation mb || ReplyMarkup.ParentOf(added) != null || ContinuationMarkup.Is(added))
+            return null;
+        bool replacement = ReplacementMarkup.TryParse(added, out _, out _);
+        return page.OfType<TextMarkupAnnotation>().FirstOrDefault(ma =>
+            ma.GetType() == mb.GetType()
+            && !run.Touched.ContainsKey(ma)
+            && !ContinuationMarkup.Is(ma)
+            && ReplyMarkup.ParentOf(ma) == null
+            && ReplacementMarkup.TryParse(ma, out _, out _) == replacement
+            && OverlapShare(ma, mb) >= NearDuplicateOverlap);
+    }
+
+    private static float OverlapShare(TextMarkupAnnotation a, TextMarkupAnnotation b)
+    {
+        float areaA = a.Rects.Sum(r => r.W * r.H), areaB = b.Rects.Sum(r => r.W * r.H);
+        float smaller = MathF.Min(areaA, areaB);
+        if (smaller <= 0) return 0;
+        float shared = 0;
+        foreach (var ra in a.Rects)
+            foreach (var rb in b.Rects)
+            {
+                float w = MathF.Min(ra.X + ra.W, rb.X + rb.W) - MathF.Max(ra.X, rb.X);
+                float h = MathF.Min(ra.Y + ra.H, rb.Y + rb.H) - MathF.Max(ra.Y, rb.Y);
+                if (w > 0 && h > 0) shared += w * h;
+            }
+        return shared / smaller;
+    }
+
+    private static string NearDuplicateWarning(Annotation existing)
+        => (existing.NativeId is { } id ? $"Near-duplicate of {id}" : "Near-duplicate of an existing annotation without an id")
+           + ", which covers much the same text. If the entry meant to change it, use an \"update\" entry with its id instead.";
 
     private static bool Near(float a, float b) => MathF.Abs(a - b) <= SameGeometryTolerance;
 
