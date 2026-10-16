@@ -662,7 +662,7 @@ public static class MarkupPlanService
         };
     }
 
-    /// <summary>Share of the smaller markup's area that the other covers for it to count as the same text.</summary>
+    /// <summary>Intersection over union of two markups' areas at which they count as the same text.</summary>
     private const float NearDuplicateOverlap = 0.5f;
 
     /// <summary>
@@ -676,20 +676,23 @@ public static class MarkupPlanService
         if (added is not TextMarkupAnnotation mb || ReplyMarkup.ParentOf(added) != null || ContinuationMarkup.Is(added))
             return null;
         bool replacement = ReplacementMarkup.TryParse(added, out _, out _);
-        return page.OfType<TextMarkupAnnotation>().FirstOrDefault(ma =>
-            ma.GetType() == mb.GetType()
-            && !run.Touched.ContainsKey(ma)
-            && !ContinuationMarkup.Is(ma)
-            && ReplyMarkup.ParentOf(ma) == null
-            && ReplacementMarkup.TryParse(ma, out _, out _) == replacement
-            && OverlapShare(ma, mb) >= NearDuplicateOverlap);
+        return page.OfType<TextMarkupAnnotation>()
+            .Where(ma => ma.GetType() == mb.GetType()
+                && !run.Touched.ContainsKey(ma)
+                && !ContinuationMarkup.Is(ma)
+                && ReplyMarkup.ParentOf(ma) == null
+                && ReplacementMarkup.TryParse(ma, out _, out _) == replacement)
+            .Select(ma => (Annotation: (Annotation)ma, Share: OverlapShare(ma, mb)))
+            .Where(c => c.Share >= NearDuplicateOverlap)
+            .OrderByDescending(c => c.Share)
+            .Select(c => c.Annotation)
+            .FirstOrDefault();
     }
 
     private static float OverlapShare(TextMarkupAnnotation a, TextMarkupAnnotation b)
     {
         float areaA = a.Rects.Sum(r => r.W * r.H), areaB = b.Rects.Sum(r => r.W * r.H);
-        float smaller = MathF.Min(areaA, areaB);
-        if (smaller <= 0) return 0;
+        if (areaA <= 0 || areaB <= 0) return 0;
         float shared = 0;
         foreach (var ra in a.Rects)
             foreach (var rb in b.Rects)
@@ -698,7 +701,8 @@ public static class MarkupPlanService
                 float h = MathF.Min(ra.Y + ra.H, rb.Y + rb.H) - MathF.Max(ra.Y, rb.Y);
                 if (w > 0 && h > 0) shared += w * h;
             }
-        return shared / smaller;
+        // Intersection over union: a short markup nested inside a long one is not a duplicate of it.
+        return shared / (areaA + areaB - shared);
     }
 
     private static string NearDuplicateWarning(Annotation existing)

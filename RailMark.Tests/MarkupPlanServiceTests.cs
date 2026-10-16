@@ -1026,6 +1026,55 @@ public class MarkupPlanServiceTests
         Assert.All(result.Entries, e => Assert.Null(e.Warning));
     }
 
+    [Fact]
+    public void Markup_Nested_In_A_Longer_Existing_One_Is_Not_A_Near_Duplicate()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "The quick brown fox jumps", Type = MarkupType.Highlight, Author = "Ann" }]);
+
+        var (_, result) = Apply([new() { Page = 1, Quote = "brown", Type = MarkupType.Highlight, Author = "Bob" }], first);
+
+        Assert.Null(result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Warning_Names_The_Closest_Of_Several_Overlapping_Candidates()
+    {
+        var (first, _) = Apply(
+        [
+            new() { Page = 1, Quote = "The quick brown fox", Type = MarkupType.Highlight, Author = "Ann" },
+            new() { Page = 1, Quote = "quick brown fox jumps", Type = MarkupType.Highlight, Author = "Ann" },
+        ]);
+        first.Pages[0][0].NativeId = "wide";
+        first.Pages[0][1].NativeId = "exact";
+
+        var (_, result) = Apply([new() { Page = 1, Quote = "quick brown fox jumps", Type = MarkupType.Highlight, Author = "Bob" }], first);
+
+        Assert.Contains("Near-duplicate of exact", result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Replacement_Is_Not_A_Near_Duplicate_Of_A_Plain_Strikeout()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Strikeout, Author = "Ann" }]);
+
+        var (_, result) = Apply(
+            [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "red fox", Author = "Bob" }], first);
+
+        Assert.Null(result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Near_Duplicate_Warning_Joins_The_Ambiguous_Quote_Warning()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "the", Type = MarkupType.Highlight, Author = "Ann", Occurrence = 1 }]);
+        first.Pages[0][0].NativeId = "ann-1";
+
+        var (_, result) = Apply([new() { Page = 1, Quote = "the", Type = MarkupType.Highlight, Author = "Bob" }], first);
+
+        Assert.Contains("Ambiguous", result.Entries[0].Warning);
+        Assert.Contains("Near-duplicate of ann-1", result.Entries[0].Warning);
+    }
+
     // --- Update by id ---
 
     private static AnnotationFile FileWith(params Annotation[] annotations)
