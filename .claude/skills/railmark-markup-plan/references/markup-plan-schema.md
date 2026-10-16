@@ -32,6 +32,7 @@ A markup plan is a single JSON object passed to `railmark <pdf> --apply-markup <
 | `inReplyTo` | string | no | The `id` of an existing annotation on the same page, as reported by `railmark <pdf> --format json`. Makes this entry a reply to that annotation. See "Replies". |
 | `update` | string | no | The `id` of an existing annotation on `page`, as reported by `--format json`. Changes that annotation in place instead of adding one — see "Updating an existing annotation". |
 | `color`   | string | no       | Hex color (`#RRGGBB`). If omitted, a type-specific default from RailReader2's annotation palette is used: highlight `#FFFF00`, underline `#00A000`, strikeout `#FF0000`, squiggly `#00A000`, note `#FFFF00`, replace `#0066FF`. The full palette is yellow `#FFFF00`, green `#00A000`, red `#FF0000`, blue `#0066FF`, black `#000000` — prefer these when overriding, so the colours can be reproduced in RailReader2. |
+| `opacity` | number | no | Opacity of a text-markup annotation, above 0 and at most 1 (`/CA` in the PDF); ignored for a `note`. Falls back to `--opacity`, then to **0.35 for a `highlight`** (the value RailReader2's own Highlight tool uses, which keeps text readable under any colour from the palette) and 1 for the other types. Setting it is what makes a re-applied entry change an existing annotation's opacity; leaving it unset never repaints one already in the PDF. Also valid on an `update` entry, for an annotation of any type. |
 | `author`  | string | no       | Defaults to `"AI Reviewer"` if omitted. |
 
 ## Output
@@ -82,7 +83,7 @@ and freehand — without looking up a quote or recomputing geometry:
 { "page": 17, "update": "<id>", "comment": "Expanded comment text…", "color": "#7FBFFF", "author": "Stefan" }
 ```
 
-- Only `comment`, `color` and `author` are applied, and at least one is required. Omit a field to
+- Only `comment`, `color`, `author` and `opacity` are applied, and at least one is required. Omit a field to
   leave it alone; `"comment": ""` clears the comment.
 - The annotation keeps its id, creation date and position. `quote`, `type`, `occurrence` and
   context are ignored; `inReplyTo` and `replacement` are rejected.
@@ -190,7 +191,7 @@ Annotation mode shows replies threaded under their parent, and its JSON reports 
 | `action` | On success: `added`, `unchanged` or `updated` (see "Re-applying a plan"). |
 | `endPage` | Present when the quote ran over a page break: the page it ends on. |
 | `inReplyTo` | Echoed for reply entries. |
-| `update` | Echoed for `update` entries; `quote` and `type` are then absent. |
+| `update` | Echoed for `update` entries (and for a failed one); `quote` and `type` are then absent. |
 | `context` | **`--dry-run` only.** The page text around the match, with the match in `[[…]]` — for a split quote, both halves, separated by `‖`. Read it to confirm the quote landed on the passage you meant. |
 
 A human-readable summary, per-failure lines and per-warning lines are printed to **stderr**. Exit code `0` means every entry resolved (and was written, unless `--dry-run` was passed); exit code `2` means one or more entries failed to resolve — well-formed entries are still applied. Exit code `1` is a hard error (bad JSON, missing file, or a write failure) and nothing is written. Warnings do not change the exit code.

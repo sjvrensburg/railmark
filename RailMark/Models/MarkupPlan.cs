@@ -45,6 +45,14 @@ public record MarkupEntry
     /// <summary>Hex color; falls back to a type-specific default when omitted.</summary>
     public string? Color { get; init; }
 
+    /// <summary>
+    /// Opacity (<c>/CA</c>), above 0 and at most 1, of a text-markup annotation; ignored for a note.
+    /// Falls back to <c>--opacity</c>, then to 0.35 for a highlight (RailReader2's own default,
+    /// which keeps text legible under any colour) and 1 for the other types. On an
+    /// <see cref="Update"/> entry it may be set on an annotation of any type.
+    /// </summary>
+    public float? Opacity { get; init; }
+
     /// <summary>Defaults to "AI Reviewer" when omitted.</summary>
     public string? Author { get; init; }
 

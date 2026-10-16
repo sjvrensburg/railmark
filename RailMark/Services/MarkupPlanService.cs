@@ -68,6 +68,18 @@ public static class MarkupPlanService
     /// </summary>
     private const float SameGeometryTolerance = 1.5f;
 
+    /// <summary>
+    /// What a highlight's opacity is when neither the entry nor <c>--opacity</c> says: the value
+    /// RailReader2's own Highlight tool uses. At 1 a saturated colour hides the text under it.
+    /// </summary>
+    public const float DefaultHighlightOpacity = 0.35f;
+
+    /// <summary>
+    /// How far apart two opacities may be and still match: /CA is stored as an 8-bit alpha, so a
+    /// value read back from a PDF is only good to about 0.004.
+    /// </summary>
+    private const float SameOpacityTolerance = 0.01f;
+
     public const string ActionAdded = "added";
     public const string ActionUnchanged = "unchanged";
     public const string ActionUpdated = "updated";
@@ -108,6 +120,7 @@ public static class MarkupPlanService
     /// <paramref name="replaceUnauthored"/>.
     /// </param>
     /// <param name="replaceUnauthored">Remove every existing annotation that has no author.</param>
+    /// <param name="defaultOpacity">Opacity for text markup whose entry sets none; see <see cref="MarkupEntry.Opacity"/>.</param>
     /// <param name="removeIds">Remove the annotations with these ids (and the tail of any that continue over a page break).</param>
     public static (AnnotationFile file, MarkupPlanApplyResult result) Resolve(
         MarkupPlan plan,
@@ -118,7 +131,8 @@ public static class MarkupPlanService
         bool includeContext = false,
         string? replaceAuthor = null,
         bool replaceUnauthored = false,
-        IReadOnlyCollection<string>? removeIds = null)
+        IReadOnlyCollection<string>? removeIds = null,
+        float? defaultOpacity = null)
     {
         var file = existing ?? new AnnotationFile();
         var missingIds = new List<string>();
@@ -338,7 +352,9 @@ public static class MarkupPlanService
                 Action<TextNoteAnnotation>? place = null;
                 if (part == 0)
                 {
-                    annotation = BuildAnnotation(entry, geometry[index][part], Page(pageIndex).Chars, pdf.GetPageSize(pageIndex));
+                    annotation = BuildAnnotation(entry, geometry[index][part], Page(pageIndex).Chars, pdf.GetPageSize(pageIndex), defaultOpacity);
+                    if (OpacityIsExplicit(entry, defaultOpacity))
+                        run.ExplicitOpacity.Add(annotation);
                     if (annotation is TextNoteAnnotation)
                     {
                         var anchorLine = geometry[index][part][^1];
@@ -355,7 +371,9 @@ public static class MarkupPlanService
                 }
                 else
                 {
-                    annotation = BuildContinuation(entry, geometry[index][part], headId);
+                    annotation = BuildContinuation(entry, geometry[index][part], headId, defaultOpacity);
+                    if (OpacityIsExplicit(entry, defaultOpacity))
+                        run.ExplicitOpacity.Add(annotation);
                 }
 
                 var outcome = Merge(file, pageIndex, annotation, index, run, place);
@@ -447,9 +465,11 @@ public static class MarkupPlanService
             && !string.Equals(target.Color, entry.Color, StringComparison.OrdinalIgnoreCase);
         bool changeAuthor = entry.Author is not null
             && !string.Equals(target.Author, entry.Author, StringComparison.Ordinal);
+        bool changeOpacity = entry.Opacity is { } opacity
+            && Math.Abs(target.Opacity - opacity) > SameOpacityTolerance;
 
         run.Claimed.Add(target);
-        if (!changeContents && !changeColor && !changeAuthor)
+        if (!changeContents && !changeColor && !changeAuthor && !changeOpacity)
             return result with { Action = ActionUnchanged };
 
         if (run.Touched.TryGetValue(target, out var earlier) && earlier != entryIndex)
@@ -474,10 +494,12 @@ public static class MarkupPlanService
         }
         if (changeAuthor)
             target.Author = entry.Author;
+        if (changeOpacity)
+            target.Opacity = entry.Opacity!.Value;
 
         // A markup that runs over a page break is two annotations; the tail carries no comment, but
-        // it shares the head's colour and author, and pairing falls back on the author.
-        if ((changeColor || changeAuthor) && target.NativeId is { } headId)
+        // it shares the head's colour, author and opacity, and pairing falls back on the author.
+        if ((changeColor || changeAuthor || changeOpacity) && target.NativeId is { } headId)
         {
             foreach (var tail in file.Pages.Values.SelectMany(a => a)
                          .Where(a => ContinuationMarkup.Is(a) && ContinuationMarkup.HeadOf(a) == headId))
@@ -489,6 +511,8 @@ public static class MarkupPlanService
                 }
                 if (changeAuthor)
                     tail.Author = entry.Author;
+                if (changeOpacity)
+                    tail.Opacity = entry.Opacity!.Value;
             }
         }
 
@@ -499,6 +523,9 @@ public static class MarkupPlanService
     /// <summary>What this run has done so far, for telling its own work from what pre-existed.</summary>
     private sealed class RunState
     {
+        /// <summary>Annotations built with an opacity the plan or command line asked for (see <see cref="OpacityIsExplicit"/>).</summary>
+        public HashSet<Annotation> ExplicitOpacity { get; } = new(ReferenceEqualityComparer.Instance);
+
         /// <summary>Which entry put each annotation in place during this run.</summary>
         public Dictionary<Annotation, int> Touched { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -560,7 +587,9 @@ public static class MarkupPlanService
 
         bool sameContents = NormalizeContents(twin.EffectiveContents) == NormalizeContents(annotation.EffectiveContents);
         bool sameColor = string.Equals(twin.Color, annotation.Color, StringComparison.OrdinalIgnoreCase);
-        if (sameContents && sameColor)
+        bool explicitOpacity = run.ExplicitOpacity.Contains(annotation);
+        bool sameOpacity = !explicitOpacity || Math.Abs(twin.Opacity - annotation.Opacity) <= SameOpacityTolerance;
+        if (sameContents && sameColor && sameOpacity)
             return new MergeOutcome(ActionUnchanged, twin);
 
         if (run.Touched.TryGetValue(twin, out var earlier) && earlier != entryIndex)
@@ -572,6 +601,8 @@ public static class MarkupPlanService
         twin.Color = annotation.Color;
         // The reader's faithful colour components would otherwise mask the new hex colour.
         twin.ColorComponents = null;
+        if (explicitOpacity)
+            twin.Opacity = annotation.Opacity;
         run.Touched[twin] = entryIndex;
         return new MergeOutcome(ActionUpdated, twin);
     }
@@ -684,14 +715,17 @@ public static class MarkupPlanService
     /// <summary>Checks the fields that only make sense for some types; null when the entry is valid.</summary>
     private static string? Validate(MarkupEntry entry)
     {
+        if (entry.Opacity is { } opacity && !(opacity > 0f && opacity <= 1f))
+            return $"opacity must be above 0 and at most 1 (got {opacity}).";
+
         if (entry.Update != null)
         {
             if (string.IsNullOrWhiteSpace(entry.Update))
                 return "update must be the id of an existing annotation.";
             if (entry.InReplyTo != null || entry.Replacement != null)
-                return "An update changes only comment, color and author; inReplyTo and replacement cannot be changed.";
-            if (entry.Comment is null && entry.Color is null && entry.Author is null)
-                return "An update needs at least one of comment, color or author to change.";
+                return "An update changes only comment, color, author and opacity; inReplyTo and replacement cannot be changed.";
+            if (entry.Comment is null && entry.Color is null && entry.Author is null && entry.Opacity is null)
+                return "An update needs at least one of comment, color, author or opacity to change.";
             return null;
         }
 
@@ -824,7 +858,7 @@ public static class MarkupPlanService
     /// first part, tagged as a continuation and without the comment (or replacement), which the
     /// first part carries — a strikeout here is the tail of the edit, not a deletion of its own.
     /// </summary>
-    private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects, string? headId)
+    private static Annotation BuildContinuation(MarkupEntry entry, List<RectF> rects, string? headId, float? defaultOpacity)
     {
         var type = entry.Kind == MarkupType.Replace ? MarkupType.Strikeout : entry.Kind;
         var annotation = BuildTextMarkup(type, rects);
@@ -832,13 +866,15 @@ public static class MarkupPlanService
         if (headId != null)
             annotation.NativeId = ContinuationMarkup.NewId(headId);
         annotation.Color = entry.Color ?? DefaultColors[entry.Kind];
+        annotation.Opacity = OpacityFor(entry, defaultOpacity);
         annotation.Author = entry.Author ?? "AI Reviewer";
         annotation.Source = AnnotationSource.RailReader;
         return annotation;
     }
 
     private static Annotation BuildAnnotation(
-        MarkupEntry entry, List<RectF> rects, IReadOnlyList<CharBox> chars, (double Width, double Height) page)
+        MarkupEntry entry, List<RectF> rects, IReadOnlyList<CharBox> chars, (double Width, double Height) page,
+        float? defaultOpacity)
     {
         var color = entry.Color ?? DefaultColors[entry.Kind];
         var author = entry.Author ?? "AI Reviewer";
@@ -870,11 +906,25 @@ public static class MarkupPlanService
             annotation.Contents = entry.Comment;
         }
         annotation.Color = color;
+        annotation.Opacity = OpacityFor(entry, defaultOpacity);
         annotation.Author = author;
         annotation.Source = AnnotationSource.RailReader;
 
         return annotation;
     }
+
+    /// <summary>The opacity a text-markup entry gets: its own, else the run's default, else the type's.</summary>
+    private static float OpacityFor(MarkupEntry entry, float? defaultOpacity)
+        => entry.Opacity ?? defaultOpacity
+           ?? (entry.Kind == MarkupType.Highlight ? DefaultHighlightOpacity : 1f);
+
+    /// <summary>
+    /// Whether the plan or the command line asked for this opacity, as opposed to it being the
+    /// type's default. Only an asked-for opacity is compared against — and written over — an
+    /// annotation already in the PDF, so re-applying an old plan doesn't repaint earlier highlights.
+    /// </summary>
+    private static bool OpacityIsExplicit(MarkupEntry entry, float? defaultOpacity)
+        => entry.Kind != MarkupType.Note && (entry.Opacity ?? defaultOpacity) is not null;
 
     private static TextMarkupAnnotation BuildTextMarkup(MarkupType type, List<RectF> rects)
     {

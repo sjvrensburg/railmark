@@ -43,6 +43,17 @@ public class AnnotationJsonBuilderTests
         Assert.Equal(2026, record.Created!.Value.Year);
     }
 
+    [Fact]
+    public void Records_Report_Opacity_Rounded_To_Two_Places()
+    {
+        // /CA is stored as an 8-bit alpha, so 0.35 reads back as 0.349.
+        var file = MakeFile((0, new HighlightAnnotation { Rects = [new(10, 100, 50, 10)], Opacity = 0.349f }));
+
+        var record = Assert.Single(new AnnotationJsonBuilder(file, "doc.pdf", [], new()).BuildExport().Annotations);
+
+        Assert.Equal(0.35f, record.Opacity);
+    }
+
     [Theory]
     [InlineData(typeof(HighlightAnnotation), "highlight")]
     [InlineData(typeof(UnderlineAnnotation), "underline")]

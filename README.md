@@ -146,6 +146,8 @@ Options:
   --remove-ids <id,id,...>
                        With --apply-markup, first remove the annotations with these
                        ids, as reported by --format json.
+  --opacity <0-1>      With --apply-markup, opacity for text markup whose entry sets
+                       none (default: 0.35 for highlights, 1 for the other types).
   --dry-run            With --apply-markup, resolve and report only; do not write.
                        The report then also shows the text around each match
   --version            Show the railmark version
@@ -233,6 +235,8 @@ Beyond the basics:
   and a changed comment is `updated` in place. `--replace-author <name>` clears an earlier round
   first; `--replace-unauthored` clears annotations with no author and `--remove-ids` removes
   particular ones.
+- **Opacity.** Highlights are written at 35% opacity, as RailReader2 does, so any palette colour
+  stays readable; `"opacity": 0.6` or `--opacity` overrides it.
 - **Updating in place.** `"update": "<id>"` changes the comment, colour or author of an existing
   annotation of any type, keeping its position, id and creation date.
 

@@ -36,6 +36,7 @@ bool dryRun = false;
 bool inPlace = false;
 string? replaceAuthor = null;
 bool replaceUnauthored = false;
+float? opacityArg = null;
 var removeIds = new List<string>();
 bool jsonFormat = false;
 string? authorArg = null;
@@ -105,6 +106,15 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--replace-author" when i + 1 < args.Length:
             replaceAuthor = args[++i];
+            break;
+        case "--opacity" when i + 1 < args.Length:
+            if (!float.TryParse(args[++i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedOpacity)
+                || !(parsedOpacity > 0f && parsedOpacity <= 1f))
+            {
+                Console.Error.WriteLine($"Error: Invalid --opacity value: {args[i]} (expected above 0 and at most 1)");
+                return 1;
+            }
+            opacityArg = parsedOpacity;
             break;
         case "--replace-unauthored":
             replaceUnauthored = true;
@@ -203,6 +213,12 @@ if ((replaceAuthor != null || replaceUnauthored || removeIds.Count > 0) && marku
     return 1;
 }
 
+if (opacityArg != null && markupPlanPath == null)
+{
+    Console.Error.WriteLine("Error: --opacity is only valid with --apply-markup.");
+    return 1;
+}
+
 if (inPlace && outputPath != null)
 {
     Console.Error.WriteLine("Error: --in-place cannot be combined with -o.");
@@ -285,7 +301,8 @@ if (markupPlanPath != null)
 
     var (annotationFileToSave, applyResult) = MarkupPlanService.Resolve(
         plan, markupPdf, markupTextService, existing, includeContext: dryRun, replaceAuthor: replaceAuthor,
-        replaceUnauthored: replaceUnauthored, removeIds: removeIds);
+        replaceUnauthored: replaceUnauthored, removeIds: removeIds,
+        defaultOpacity: opacityArg);
 
     if (replaceAuthor != null || replaceUnauthored || removeIds.Count > 0)
     {
@@ -770,6 +787,8 @@ static void PrintUsage()
           --remove-ids <id,id,...>
                                With --apply-markup, first remove the annotations with these
                                ids, as reported by --format json.
+          --opacity <0-1>      With --apply-markup, opacity for text markup whose entry sets
+                               none (default: 0.35 for highlights, 1 for the other types).
           --dry-run            With --apply-markup, resolve and report only; do not write.
                                The report then also shows the text around each match
           --version            Show the railmark version

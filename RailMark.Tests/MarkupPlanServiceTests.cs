@@ -705,13 +705,14 @@ public class MarkupPlanServiceTests
 
     private static (AnnotationFile file, MarkupPlanApplyResult result) Apply(
         List<MarkupEntry> entries, AnnotationFile? existing = null, string? replaceAuthor = null,
-        bool replaceUnauthored = false, IReadOnlyCollection<string>? removeIds = null)
+        bool replaceUnauthored = false, IReadOnlyCollection<string>? removeIds = null, float? defaultOpacity = null)
         => MarkupPlanService.Resolve(
             new MarkupPlan { Entries = entries },
             new FakePdfService(pageCount: 1, pageSize: (600, 800)),
             new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps over the lazy dog." }),
             existing,
-            replaceAuthor: replaceAuthor, replaceUnauthored: replaceUnauthored, removeIds: removeIds);
+            replaceAuthor: replaceAuthor, replaceUnauthored: replaceUnauthored, removeIds: removeIds,
+            defaultOpacity: defaultOpacity);
 
     private static List<MarkupEntry> MixedPlan() =>
     [
@@ -1149,6 +1150,121 @@ public class MarkupPlanServiceTests
 
         Assert.Equal("abc", plan.Entries[0].Update);
         Assert.Null(plan.Entries[0].Type);
+    }
+
+    // --- Opacity ---
+
+    private static Annotation OnlyAnnotation(AnnotationFile file) => Assert.Single(file.Pages[0]);
+
+    [Fact]
+    public void Highlight_Defaults_To_The_Readable_Opacity_And_Other_Types_To_Opaque()
+    {
+        var (file, _) = Apply(
+        [
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight },
+            new() { Page = 1, Quote = "quick", Type = MarkupType.Underline },
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" },
+        ]);
+
+        var byType = file.Pages[0].ToDictionary(a => a.GetType(), a => a.Opacity);
+        Assert.Equal(0.35f, byType[typeof(HighlightAnnotation)]);
+        Assert.Equal(1f, byType[typeof(UnderlineAnnotation)]);
+        Assert.Equal(1f, byType[typeof(StrikeOutAnnotation)]);
+    }
+
+    [Fact]
+    public void Opacity_Entry_Beats_Global_Default_Beats_Type_Default()
+    {
+        var (file, _) = Apply(
+        [
+            new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Opacity = 0.6f },
+            new() { Page = 1, Quote = "quick", Type = MarkupType.Highlight },
+            new() { Page = 1, Quote = "lazy", Type = MarkupType.Underline },
+        ], defaultOpacity: 0.8f);
+
+        Assert.Equal([0.6f, 0.8f, 0.8f], file.Pages[0].Select(a => a.Opacity));
+    }
+
+    [Fact]
+    public void Opacity_Is_Ignored_For_Notes()
+    {
+        var (file, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Note, Comment = "n", Opacity = 0.5f }]);
+
+        Assert.True(result.Entries[0].Success);
+        Assert.Equal(1f, OnlyAnnotation(file).Opacity);
+    }
+
+    [Theory]
+    [InlineData(0f)]
+    [InlineData(-0.1f)]
+    [InlineData(1.5f)]
+    public void Opacity_Out_Of_Range_Fails_The_Entry(float opacity)
+    {
+        var (_, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Opacity = opacity }]);
+
+        Assert.False(result.Entries[0].Success);
+        Assert.Contains("opacity must be above 0", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Reapplying_With_A_Changed_Explicit_Opacity_Updates_In_Place()
+    {
+        List<MarkupEntry> Plan(float opacity) =>
+            [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight, Opacity = opacity }];
+        var (file, _) = Apply(Plan(0.5f));
+
+        var (_, same) = Apply(Plan(0.5f), file);
+        Assert.Equal("unchanged", same.Entries[0].Action);
+
+        // An 8-bit alpha read back from a PDF is within tolerance of what was asked for.
+        file.Pages[0][0].Opacity = 0.4980f;
+        var (_, rounded) = Apply(Plan(0.5f), file);
+        Assert.Equal("unchanged", rounded.Entries[0].Action);
+
+        var (updated, changed) = Apply(Plan(0.25f), file);
+        Assert.Equal("updated", changed.Entries[0].Action);
+        Assert.Equal(0.25f, OnlyAnnotation(updated).Opacity);
+    }
+
+    [Fact]
+    public void Reapplying_A_Plan_Without_Opacity_Leaves_An_Opaque_Highlight_Alone()
+    {
+        var existing = FileWith(new HighlightAnnotation
+        {
+            Opacity = 1f, Color = "#FFFF00", Author = "AI Reviewer", Rects = [new(10f, 30f, 9f, 10f)],
+        });
+
+        var (file, result) = Apply([new() { Page = 1, Quote = "brown fox", Type = MarkupType.Highlight }], existing);
+
+        Assert.Equal("unchanged", result.Entries[0].Action);
+        Assert.Equal(1f, OnlyAnnotation(file).Opacity);
+    }
+
+    [Fact]
+    public void Continuation_Tail_Gets_The_Same_Opacity()
+    {
+        var (file, _) = ResolveTwoPages(new() { Page = 1, Quote = "whole measurement with a fresh batch", Type = MarkupType.Highlight });
+
+        Assert.All(file.Pages.Values.SelectMany(a => a), a => Assert.Equal(0.35f, a.Opacity));
+    }
+
+    [Fact]
+    public void Update_Changes_Opacity_Of_Any_Annotation_And_Its_Tail()
+    {
+        var existing = FileWith(new FreehandAnnotation { NativeId = "ink" });
+        var (file, result) = Apply([new() { Page = 1, Update = "ink", Opacity = 0.4f }], existing);
+        Assert.Equal("updated", result.Entries[0].Action);
+        Assert.Equal(0.4f, OnlyAnnotation(file).Opacity);
+
+        var head = new HighlightAnnotation { NativeId = "head", Opacity = 1f };
+        var tail = new HighlightAnnotation
+        {
+            NativeId = ContinuationMarkup.NewId("head"), Subject = ContinuationMarkup.Subject, Opacity = 1f,
+        };
+        var split = FileWith(head);
+        split.Pages[1] = [tail];
+        Apply([new() { Page = 1, Update = "head", Opacity = 0.35f }], split);
+        Assert.Equal(0.35f, tail.Opacity);
     }
 
     // --- Across a page break ---
