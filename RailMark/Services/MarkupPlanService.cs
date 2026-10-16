@@ -402,19 +402,27 @@ public static class MarkupPlanService
     {
         unauthored |= author is { Length: 0 };
         int removed = 0;
+        var wanted = ids is null ? null : new HashSet<string>(ids, StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var annotations in file.Pages.Values)
         {
             removed += annotations.RemoveAll(a =>
             {
-                if (author is { Length: > 0 } && string.Equals(a.Author, author, StringComparison.Ordinal)) return true;
-                if (unauthored && string.IsNullOrEmpty(a.Author)) return true;
-                if (ids is null || a.NativeId is not { } id) return false;
-                // The tail of a markup that runs over a page break goes with its head.
-                var head = ContinuationMarkup.HeadOf(a) ?? id;
-                if (!ids.Contains(head, StringComparer.Ordinal)) return false;
-                seen.Add(head);
-                return true;
+                // Note the id first, so an annotation also removed by author is not reported missing.
+                bool byId = false;
+                if (wanted is not null && a.NativeId is { } id)
+                {
+                    // The tail of a markup that runs over a page break goes with its head.
+                    var head = ContinuationMarkup.HeadOf(a) ?? id;
+                    if (wanted.Contains(head))
+                    {
+                        seen.Add(head);
+                        byId = true;
+                    }
+                }
+                return byId
+                    || (author is { Length: > 0 } && string.Equals(a.Author, author, StringComparison.Ordinal))
+                    || (unauthored && string.IsNullOrEmpty(a.Author));
             });
         }
         if (ids != null)
