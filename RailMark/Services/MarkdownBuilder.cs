@@ -1,5 +1,6 @@
 using System.Text;
 using RailReader.Core.Models;
+using RailReader.Core.Services;
 
 namespace RailMark.Services;
 
@@ -163,34 +164,26 @@ public class MarkdownBuilder
                 if (!string.IsNullOrEmpty(annotations[i].NativeId))
                     byId.TryAdd(annotations[i].NativeId!, (pageIdx, i));
 
-        var replies = new List<((int page, int annotIdx) reply, (int page, int annotIdx) parent)>();
+        // Core's thread builder is cycle-safe: a reply whose chain of parents loops is cut at its
+        // earliest member, which becomes a root. A reply is only rendered beneath its parent, so
+        // only annotations it places in a thread's replies are threaded; the rest stay as they are.
+        ReplyMarkup.LinkReplies(_annotations);
+        var position = new Dictionary<Annotation, (int page, int annotIdx)>(ReferenceEqualityComparer.Instance);
         foreach (var (pageIdx, annotations) in _annotations.Pages)
-        {
             for (int i = 0; i < annotations.Count; i++)
-            {
-                if (annotations[i] is not TextNoteAnnotation note) continue;
-                if (ReplyMarkup.ParentOf(note) is not { } parentId) continue;
-                if (!byId.TryGetValue(parentId, out var parent) || _groupChildren.Contains(parent)) continue;
-                replies.Add(((pageIdx, i), parent));
-            }
-        }
+                position.TryAdd(annotations[i], (pageIdx, i));
 
-        // Malformed /IRT data can make replies point at each other (or a note at itself). A reply
-        // is only rendered beneath its parent, so in a cycle nothing would ever be rendered at
-        // all: leave any reply whose chain of parents loops as an ordinary note.
-        var parentOf = replies.ToDictionary(r => r.reply, r => r.parent);
-        bool Loops((int page, int annotIdx) start)
+        var replies = new List<((int page, int annotIdx) reply, (int page, int annotIdx) parent)>();
+        foreach (var thread in AnnotationThreads.Build(_annotations))
         {
-            var seen = new HashSet<(int page, int annotIdx)> { start };
-            var current = start;
-            while (parentOf.TryGetValue(current, out var next))
+            foreach (var note in thread.Replies.OfType<TextNoteAnnotation>())
             {
-                if (!seen.Add(next)) return true;
-                current = next;
+                if (note.InReplyTo is not { } parentId
+                    || !byId.TryGetValue(parentId, out var parent)
+                    || _groupChildren.Contains(parent)) continue;
+                replies.Add((position[note], parent));
             }
-            return false;
         }
-        replies.RemoveAll(r => Loops(r.reply));
 
         foreach (var (reply, parent) in replies
                      .OrderBy(r => r.reply.page)

@@ -145,7 +145,7 @@ Options:
                        that has no author (same as --replace-author "").
   --remove-ids <id,id,...>
                        With --apply-markup, first remove the annotations with these
-                       ids, as reported by --format json.
+                       ids, as reported by --format json. Replies go with their parent.
   --opacity <0-1>      With --apply-markup, opacity for text markup whose entry sets
                        none (default: 0.35 for highlights, 1 for the other types).
   --dry-run            With --apply-markup, resolve and report only; do not write.

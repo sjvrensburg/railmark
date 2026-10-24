@@ -973,6 +973,44 @@ public class MarkupPlanServiceTests
         Assert.Equal(["nope"], result.MissingIds);
     }
 
+    [Fact]
+    public void Resolve_Removing_A_Comment_Removes_Its_Whole_Thread()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { NativeId = "p", Author = "Human" },
+            new TextNoteAnnotation { NativeId = "p#reply-1", InReplyTo = "p", Author = "Bot" },
+            new HighlightAnnotation { NativeId = "q", Author = "Human" },
+        ];
+        // A reply to a reply, on another page, linked only through its id.
+        existing.Pages[1] = [new TextNoteAnnotation { NativeId = "p#reply-1#reply-2", Author = "Bot" }];
+
+        var (file, result) = Apply([], existing, removeIds: ["p"]);
+
+        Assert.Equal(3, result.Removed);
+        Assert.Equal(["q"], file.Pages[0].Select(a => a.NativeId));
+        Assert.Empty(file.Pages[1]);
+    }
+
+    [Fact]
+    public void Resolve_Removing_A_Comment_Also_Removes_The_Page_Break_Tail_Of_A_Markup_Reply()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { NativeId = "p" },
+            new HighlightAnnotation { NativeId = "p#reply-x", InReplyTo = "p" },
+        ];
+        existing.Pages[1] = [new HighlightAnnotation { NativeId = "p#reply-x#cont-y", Subject = ContinuationMarkup.Subject }];
+
+        var (file, result) = Apply([], existing, removeIds: ["p"]);
+
+        Assert.Equal(3, result.Removed);
+        Assert.Empty(file.Pages[0]);
+        Assert.Empty(file.Pages[1]);
+    }
+
     // --- Near-duplicate warning ---
 
     [Fact]

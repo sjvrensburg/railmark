@@ -172,7 +172,7 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
-    public void Reply_Cycles_Are_Rendered_As_Plain_Notes_Not_Dropped()
+    public void Reply_Cycles_Are_Cut_At_Their_Earliest_Member_Not_Dropped()
     {
         var file = MakeFile(
         [
@@ -186,8 +186,10 @@ public class MarkdownBuilderTests
 
         var md = Build(file, [H("Chapter 1", 0)]).Build();
 
+        // The loop a <-> b is cut at a, which becomes a plain note; b hangs beneath it.
         Assert.Contains("> **Note:** Note A.", md);
-        Assert.Contains("> **Note:** Note B.", md);
+        Assert.Contains("> > **Reply:** Note B.", md);
+        // A note replying to itself is simply a note.
         Assert.Contains("> **Note:** Note C.", md);
     }
 

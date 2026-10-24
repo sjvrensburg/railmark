@@ -428,30 +428,56 @@ public static class MarkupPlanService
         int removed = 0;
         var wanted = ids is null ? null : new HashSet<string>(ids, StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var gone = new HashSet<string>(StringComparer.Ordinal);
         foreach (var annotations in file.Pages.Values)
         {
             removed += annotations.RemoveAll(a =>
             {
-                // Note the id first, so an annotation also removed by author is not reported missing.
-                bool byId = false;
-                if (wanted is not null && a.NativeId is { } id)
-                {
-                    // The tail of a markup that runs over a page break goes with its head.
-                    var head = ContinuationMarkup.HeadOf(a) ?? id;
-                    if (wanted.Contains(head))
-                    {
-                        seen.Add(head);
-                        byId = true;
-                    }
-                }
-                return byId
-                    || (author is { Length: > 0 } && string.Equals(a.Author, author, StringComparison.Ordinal))
-                    || (unauthored && string.IsNullOrEmpty(a.Author));
+                bool hit = Matches(a);
+                if (hit && a.NativeId is { } removedId) gone.Add(removedId);
+                return hit;
             });
         }
+        // A comment goes with its thread, as in RailReader2 and Acrobat; replies may sit on any
+        // page and may themselves be replied to, so repeat until nothing more follows.
+        int swept;
+        do
+        {
+            swept = 0;
+            foreach (var annotations in file.Pages.Values)
+                swept += annotations.RemoveAll(a =>
+                {
+                    var parent = ReplyMarkup.ParentOf(a);
+                    bool follows = (parent is not null && gone.Contains(parent))
+                        || (ContinuationMarkup.HeadOf(a) is { } head && gone.Contains(head));
+                    if (!follows) return false;
+                    if (a.NativeId is { } id) gone.Add(id);
+                    return true;
+                });
+            removed += swept;
+        } while (swept > 0);
         if (ids != null)
             missingIds.AddRange(ids.Where(id => !seen.Contains(id)));
         return removed;
+
+        bool Matches(Annotation a)
+        {
+            // Note the id first, so an annotation also removed by author is not reported missing.
+            bool byId = false;
+            if (wanted is not null && a.NativeId is { } id)
+            {
+                // The tail of a markup that runs over a page break goes with its head.
+                var head = ContinuationMarkup.HeadOf(a) ?? id;
+                if (wanted.Contains(head))
+                {
+                    seen.Add(head);
+                    byId = true;
+                }
+            }
+            return byId
+                || (author is { Length: > 0 } && string.Equals(a.Author, author, StringComparison.Ordinal))
+                || (unauthored && string.IsNullOrEmpty(a.Author));
+        }
     }
 
     /// <summary>

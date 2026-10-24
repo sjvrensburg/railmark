@@ -72,7 +72,7 @@ and case-sensitive; other authors' annotations are never touched.
 Annotations with **no author** (many viewers write none) are selected with `--replace-unauthored`
 (or `--replace-author ""`). To remove particular annotations, pass their ids from `--format json`:
 `--remove-ids <id,id,...>` (a markup that runs over a page break is removed with its tail; an id
-that matches nothing is warned about). Replies to a removed annotation are **not** removed with it: they stay as ordinary top-level notes, and a later `inReplyTo` to the removed id fails. Remove them too (by id) if you want the thread gone.
+that matches nothing is warned about). Replies to a removed annotation are removed with it (and replies to those, on any page), so a thread never outlives its parent; the removed count includes them. This applies to `--replace-author` and `--replace-unauthored` too: another author's reply to an annotation you clear goes as well. A later `inReplyTo` to the removed id fails.
 
 ## Updating an existing annotation
 

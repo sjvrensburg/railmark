@@ -425,7 +425,8 @@ else
 fi
 
 # --- 10. Replies -----------------------------------------------------------------
-# PDFium can't write /IRT, so a reply's link to its parent rides in its /NM.
+# A reply's link to its parent rides in its /NM (the fallback for PDFs written before Core 0.71,
+# and for files Core cannot link) and, since Core 0.71, in a real /IRT as well.
 # Only a real write + read shows the link survives.
 echo ""
 section "replies"
@@ -454,6 +455,9 @@ jq -e --arg id "$parent_id" '[.annotations[] | select(.inReplyTo == $id and .typ
     "${WORK}/replied.ann.json" > /dev/null \
     && echo "  ok   reply link survives the PDF" \
     || { echo "  FAIL reply link lost in the PDF" >&2; failures=$((failures + 1)); }
+grep -aq '/IRT' "${WORK}/replied.pdf" \
+    && echo "  ok   reply carries a real /IRT" \
+    || { echo "  FAIL no /IRT in the replied PDF" >&2; failures=$((failures + 1)); }
 
 "${RAILMARK[@]}" "${WORK}/replied.pdf" -o "${WORK}/replied.md" > /dev/null 2>&1
 check "reply threaded under its parent" "${WORK}/replied.md" "> > **Reply — AI Reviewer:** The mean, per the methods."
@@ -468,14 +472,26 @@ fi
 "${RAILMARK[@]}" "${WORK}/replied.pdf" --apply-markup "${WORK}/reply.json" --dry-run > "${WORK}/reply2.out" 2>/dev/null
 jcheck "re-applying replies is unchanged" "${WORK}/reply2.out" 'all(.[]; .action == "unchanged")'
 
+# Removing a comment removes its replies with it.
+echo '{"entries":[]}' > "${WORK}/empty.json"
+"${RAILMARK[@]}" "${WORK}/replied.pdf" --apply-markup "${WORK}/empty.json" --remove-ids "$parent_id" -o "${WORK}/unthreaded.pdf" > /dev/null 2>&1
+"${RAILMARK[@]}" "${WORK}/unthreaded.pdf" --format json -o - > "${WORK}/unthreaded.ann.json" 2>/dev/null
+jq -e '[.annotations[] | select(.author == "Human" or .author == "AI Reviewer")] | length == 0' \
+    "${WORK}/unthreaded.ann.json" > /dev/null \
+    && echo "  ok   removing a comment removes its replies" \
+    || { echo "  FAIL replies survived their parent's removal" >&2; failures=$((failures + 1)); }
+
 # A thread stays contiguous: replying to the first of the two stacked notes from section 9 puts
 # the reply right under it and pushes the second note down, so the icons read parent, reply,
 # sibling from the top of the page. (PDF /Rect is bottom-up: a higher y is higher on the page.)
+# Core's /IRT post-pass is an incremental update, so the file holds every revision of a note;
+# the last occurrence of each text is the live one.
 first_id=$(jq -r '.annotations[] | select(.comment == "First issue.") | .id' "${WORK}/twonotes.ann.json")
 jq -n --arg id "$first_id" '{entries: [{page: 1, type: "note", inReplyTo: $id, comment: "Reply to the first."}]}' > "${WORK}/thread.json"
 "${RAILMARK[@]}" "${WORK}/twonotes.pdf" --apply-markup "${WORK}/thread.json" -o "${WORK}/thread.pdf" > /dev/null 2>&1
 python_free_order=$(grep -ao '/Contents([^)]*)[^>]*/Rect\[[^]]*\]/Subtype/Text' "${WORK}/thread.pdf" \
-    | sed 's#/Contents(\([^)]*\)).*/Rect\[ *\([^ ]*\) *\([^ ]*\).*#\3 \1#' | sort -rn | cut -d' ' -f2- | paste -sd '|')
+    | sed 's#/Contents(\([^)]*\)).*/Rect\[ *\([^ ]*\) *\([^ ]*\).*#\3 \1#' | awk '{t=$0; sub(/^[^ ]* /,"",t); y[t]=$1; if(!(t in o)){o[t]=++n; k[n]=t}} END{for(i=1;i<=n;i++) print y[k[i]], k[i]}' \
+    | sort -rn | cut -d' ' -f2- | paste -sd '|')
 if [ "$python_free_order" = "First issue.|Reply to the first.|Second issue." ]; then
     echo "  ok   reply sits under its parent, sibling pushed down"
 else
