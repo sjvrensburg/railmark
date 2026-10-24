@@ -447,7 +447,10 @@ public static class MarkupPlanService
             foreach (var annotations in file.Pages.Values)
                 swept += annotations.RemoveAll(a =>
                 {
-                    if (ReplyMarkup.ParentOf(a) is not { } parent || !gone.Contains(parent)) return false;
+                    var parent = ReplyMarkup.ParentOf(a);
+                    bool follows = (parent is not null && gone.Contains(parent))
+                        || (ContinuationMarkup.HeadOf(a) is { } head && gone.Contains(head));
+                    if (!follows) return false;
                     if (a.NativeId is { } id) gone.Add(id);
                     return true;
                 });
