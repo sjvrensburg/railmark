@@ -260,6 +260,10 @@ mkdir -p ~/.claude/skills
 cp -r .claude/skills/railmark-markup-plan ~/.claude/skills/
 ```
 
+Update the skill the same way whenever you update the CLI: the schema reference it carries
+describes the release it ships with, and the skill's setup section checks that the installed
+`railmark` is new enough.
+
 (Or, working inside a clone of this repo, the skill is already available project-scoped at
 `.claude/skills/railmark-markup-plan/` — no copy needed.) It teaches an agent the full
 review-and-apply workflow — exporting the document, drafting a markup plan, the verbatim-quote
