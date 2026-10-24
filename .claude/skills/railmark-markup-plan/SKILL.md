@@ -32,7 +32,18 @@ step 1 of the workflow, check:
 railmark --version
 ```
 
-If that prints a version, skip the rest of this section. If it errors, install the CLI as below,
+This copy of the skill documents **railmark 0.16.0 or newer**; older builds lack features it
+relies on (`update` by id, the near-duplicate warning, `--opacity`, `--remove-ids`, replies that
+carry a real `/IRT`, removal that takes a comment's replies with it). Check the version is recent
+enough:
+
+```bash
+need=0.16.0; have=$(railmark --version | awk '{print $2}')
+[ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" = "$need" ] && echo "ok: $have" || echo "too old: $have"
+```
+
+If it prints `ok`, skip the rest of this section. If `railmark` is missing, or too old, install
+the CLI as below (the Linux installer replaces an existing copy, which is also the upgrade path),
 then re-check. Never fall back to a different PDF tool, and never hand-write PDF annotation
 geometry — the whole point of this skill is that `railmark` resolves quotes to exact geometry.
 
@@ -65,7 +76,11 @@ ln -sf ~/.local/opt/railmark-${ver}-linux-x86_64/railmark ~/.local/bin/railmark
 
 **Windows x64** — download `railmark-<version>-win-x64.zip` from
 <https://github.com/sjvrensburg/railmark/releases/latest>, extract it, and use `railmark.exe`
-from the extracted folder (or add that folder to `PATH`).
+from the extracted folder (or add that folder to `PATH`). To upgrade, extract the newer zip over
+the old folder.
+
+Every release publishes a `SHA256SUMS` file next to its artifacts; to verify a manual download,
+run `sha256sum -c --ignore-missing SHA256SUMS` (Linux) in the folder holding both.
 
 If `~/.local/bin` is not on `PATH`, either add it or invoke the binary by full path. Confirm with
 `railmark --version` before continuing.
@@ -96,6 +111,9 @@ curl -fsSL "$base/SKILL.md"                            -o "$dest/SKILL.md"
 curl -fsSL "$base/references/markup-plan-schema.md"    -o "$dest/references/markup-plan-schema.md"
 curl -fsSL "$base/templates/example-markup-plan.json"  -o "$dest/templates/example-markup-plan.json"
 ```
+
+To update the skill, repeat either method — it overwrites the three files. Update the CLI and the
+skill together, since the schema reference describes the CLI of the same release.
 
 Verify the install: `ls ~/.claude/skills/railmark-markup-plan` should list `SKILL.md`,
 `references/` and `templates/`. The skill is picked up in the next Claude Code session; in the
