@@ -973,6 +973,26 @@ public class MarkupPlanServiceTests
         Assert.Equal(["nope"], result.MissingIds);
     }
 
+    [Fact]
+    public void Resolve_Removing_A_Comment_Removes_Its_Whole_Thread()
+    {
+        var existing = new AnnotationFile();
+        existing.Pages[0] =
+        [
+            new HighlightAnnotation { NativeId = "p", Author = "Human" },
+            new TextNoteAnnotation { NativeId = "p#reply-1", InReplyTo = "p", Author = "Bot" },
+            new HighlightAnnotation { NativeId = "q", Author = "Human" },
+        ];
+        // A reply to a reply, on another page, linked only through its id.
+        existing.Pages[1] = [new TextNoteAnnotation { NativeId = "p#reply-1#reply-2", Author = "Bot" }];
+
+        var (file, result) = Apply([], existing, removeIds: ["p"]);
+
+        Assert.Equal(3, result.Removed);
+        Assert.Equal(["q"], file.Pages[0].Select(a => a.NativeId));
+        Assert.Empty(file.Pages[1]);
+    }
+
     // --- Near-duplicate warning ---
 
     [Fact]

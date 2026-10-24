@@ -6,11 +6,12 @@ namespace RailMark.Services;
 /// How RailMark links a reply to the annotation it answers.
 /// </summary>
 /// <remarks>
-/// PDF threads a reply to its parent with /IRT, an indirect object reference PDFium can read but
-/// not write. RailMark instead chooses the reply's own /NM: the parent's /NM, then
-/// <see cref="Marker"/>, then a fresh id. /NM round-trips through PDFium and through viewers
-/// untouched, so the link survives the write, and <see cref="ParentOf"/> recovers it on the way
-/// back in — preferring a genuine /IRT (a reply written by Acrobat) whenever there is one.
+/// PDF threads a reply to its parent with /IRT. Core 0.71 writes it (as a post-pass over PDFium's
+/// output), but not for signed or read-only files, which go to the sidecar, nor for RC4/AES-128
+/// files, and PDFs RailMark wrote earlier have none. RailMark therefore also chooses the reply's
+/// own /NM: the parent's /NM, then <see cref="Marker"/>, then a fresh id. /NM round-trips through
+/// PDFium and through viewers untouched, and <see cref="ParentOf"/> recovers it on the way back
+/// in — preferring a genuine /IRT whenever there is one.
 /// </remarks>
 internal static class ReplyMarkup
 {
