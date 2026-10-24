@@ -30,6 +30,19 @@ internal static class ReplyMarkup
         if (!string.IsNullOrEmpty(annotation.InReplyTo)) return annotation.InReplyTo;
         return IdSuffix.Prefix(annotation.NativeId, Marker);
     }
+
+    /// <summary>
+    /// Fills in <see cref="Annotation.InReplyTo"/> from the /NM convention wherever a reply has no
+    /// real /IRT, so code that reads threads by <c>InReplyTo</c> alone (Core's
+    /// <see cref="RailReader.Core.Services.AnnotationThreads"/>) sees RailMark's replies, including
+    /// those written before Core could write /IRT. Saving afterwards writes the missing /IRT.
+    /// </summary>
+    public static void LinkReplies(AnnotationFile file)
+    {
+        foreach (var annotation in file.Pages.Values.SelectMany(l => l))
+            if (string.IsNullOrEmpty(annotation.InReplyTo))
+                annotation.InReplyTo = ParentOf(annotation);
+    }
 }
 
 /// <summary>

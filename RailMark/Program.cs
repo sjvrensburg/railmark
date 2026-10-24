@@ -292,6 +292,7 @@ if (markupPlanPath != null)
     try
     {
         existing = CompositeAnnotationStore.Default.Load(pdfPath);
+        if (existing is not null) ReplyMarkup.LinkReplies(existing);
     }
     catch (Exception ex)
     {
