@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using RailMark.Services;
 using RailReader.Core.Services;
 
 namespace RailMark.Tests;
@@ -10,14 +9,12 @@ public sealed class DocumentIdentityTests : IDisposable
 
     public DocumentIdentityTests()
     {
-        DocumentIdentity.MapPathOverride = Path.Combine(_dir, "document_ids.json");
-        DocumentIdentity.ResetForTests();
+        DocumentIdentity.OverrideMapPathForTesting(Path.Combine(_dir, "document_ids.json"));
     }
 
     public void Dispose()
     {
-        DocumentIdentity.MapPathOverride = null;
-        DocumentIdentity.ResetForTests();
+        DocumentIdentity.OverrideMapPathForTesting(null);
         Directory.Delete(_dir, true);
     }
 

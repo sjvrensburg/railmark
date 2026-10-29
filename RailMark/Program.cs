@@ -247,7 +247,7 @@ var factory = new SkiaPdfServiceFactory();
 
 // Name the sidecar (signed or read-only PDFs) the way RailReader2 does, or the two tools read and
 // write different files.
-AnnotationService.Default.DocumentKeyResolver = DocumentIdentity.Lookup;
+AnnotationService.Default.DocumentKeyResolver = DocumentIdentity.ReadOnlyResolver;
 AnnotationService.Default.OnResolverFailure = (path, ex) =>
     Console.Error.WriteLine($"Warning: {path} — could not identify the document for its annotation sidecar: {ex.Message}");
 
