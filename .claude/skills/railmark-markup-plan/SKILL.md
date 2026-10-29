@@ -32,13 +32,13 @@ step 1 of the workflow, check:
 railmark --version
 ```
 
-This copy of the skill documents **railmark 0.16.0 or newer**; older builds lack features it
+This copy of the skill documents **railmark 0.17.0 or newer**; older builds lack features it
 relies on (`update` by id, the near-duplicate warning, `--opacity`, `--remove-ids`, replies that
-carry a real `/IRT`, removal that takes a comment's replies with it). Check the version is recent
-enough:
+carry a real `/IRT`, removal that takes a comment's replies with it, the no-text-layer error and
+OCR warning, sharing RailReader2's annotation sidecar). Check the version is recent enough:
 
 ```bash
-need=0.16.0; have=$(railmark --version | awk '{print $2}')
+need=0.17.0; have=$(railmark --version | awk '{print $2}')
 [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" = "$need" ] && echo "ok: $have" || echo "too old: $have"
 ```
 
