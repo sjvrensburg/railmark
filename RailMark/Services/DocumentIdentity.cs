@@ -27,6 +27,11 @@ internal static class DocumentIdentity
 
     private static IdentityMap? s_map;
 
+    // Per path, the id resolved first in this run. Core resolves on every Load and Save, and a
+    // native save changes the bytes: without this a copy recognised by its hash would switch
+    // sidecars mid-run, and an unknown PDF would be hashed again on every call.
+    private static readonly Dictionary<string, string?> s_resolved = new(StringComparer.Ordinal);
+
     /// <summary>
     /// The id RailReader2 last resolved for this path, else the id it recorded for these exact
     /// bytes (a moved, renamed or copied file), else null. Hashes the file only when the path is
@@ -35,10 +40,13 @@ internal static class DocumentIdentity
     public static string? Lookup(string pdfPath)
     {
         string full = Path.GetFullPath(pdfPath);
+        if (s_resolved.TryGetValue(full, out var resolved)) return resolved;
         var map = Map();
-        if (map.Files.TryGetValue(full, out var known)) return known.Id;
-        if (!File.Exists(full)) return null;
-        return map.Aliases.GetValueOrDefault(HashFile(full));
+        if (map.Files?.TryGetValue(full, out var known) == true) return s_resolved[full] = known?.Id;
+        // Nothing to look a hash up in, or nothing to hash yet (an output file not written): don't
+        // read the whole PDF, and don't remember the miss, since the file may appear later.
+        if (map.Aliases is not { Count: > 0 } || !File.Exists(full)) return null;
+        return s_resolved[full] = map.Aliases.GetValueOrDefault(HashFile(full));
     }
 
     private static IdentityMap Map() => s_map ??= Load();
@@ -57,7 +65,11 @@ internal static class DocumentIdentity
         }
     }
 
-    internal static void ResetForTests() => s_map = null;
+    internal static void ResetForTests()
+    {
+        s_map = null;
+        s_resolved.Clear();
+    }
 
     private static string HashFile(string path)
     {
@@ -72,7 +84,7 @@ internal static class DocumentIdentity
 
     private sealed class IdentityMap
     {
-        public Dictionary<string, FileEntry> Files { get; set; } = new(StringComparer.Ordinal);
-        public Dictionary<string, string> Aliases { get; set; } = new(StringComparer.Ordinal);
+        public Dictionary<string, FileEntry?>? Files { get; set; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string>? Aliases { get; set; } = new(StringComparer.Ordinal);
     }
 }

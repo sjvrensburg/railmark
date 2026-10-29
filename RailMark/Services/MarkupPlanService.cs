@@ -281,16 +281,17 @@ public static class MarkupPlanService
                 }
             }
 
+            // The commonest cause of a missing quote is a page number off by one: say so. Checked
+            // first, so a blank page in a text PDF points at the neighbour rather than at OCR.
+            if (failure.MatchCount == 0 && FoundOnNeighbour(entry.Quote!, pageIndex) is { } neighbour)
+                failure = failure with { Error = $"Quote not found on page {entry.Page} (it occurs on page {neighbour + 1})." };
             // A scan has no text to search: no plan can fix that, so say what will.
-            if (failure.MatchCount == 0 && Page(pageIndex).Blank)
+            else if (failure.MatchCount == 0 && Page(pageIndex).Blank)
                 failure = failure with
                 {
                     Error = $"Page {entry.Page} has no text layer (is it a scan?). Add one with "
                             + "`railreader2 ocr <pdf>` and apply the plan to the copy it writes.",
                 };
-            // The commonest cause of a missing quote is a page number off by one: say so.
-            else if (failure.MatchCount == 0 && FoundOnNeighbour(entry.Quote!, pageIndex) is { } neighbour)
-                failure = failure with { Error = $"Quote not found on page {entry.Page} (it occurs on page {neighbour + 1})." };
             else if (failure.MatchCount == 0 && Page(pageIndex).FromOcr)
                 failure = failure with
                 {

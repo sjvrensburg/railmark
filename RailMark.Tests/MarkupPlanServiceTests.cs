@@ -1502,6 +1502,15 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
+    public void Resolve_Points_At_The_Neighbour_Rather_Than_OCR_For_A_Blank_Page()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = "", [1] = "We fit the model." });
+
+        Assert.Equal("Quote not found on page 1 (it occurs on page 2).", result.Entries[0].Error);
+    }
+
+    [Fact]
     public void Resolve_Warns_When_The_Match_Is_In_OCR_Text()
     {
         var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },

@@ -57,6 +57,19 @@ public sealed class DocumentIdentityTests : IDisposable
     }
 
     [Fact]
+    public void Lookup_Keeps_A_Copys_Id_After_Its_Bytes_Change_In_The_Same_Run()
+    {
+        var original = WritePdf("a.pdf", "same bytes");
+        var copy = WritePdf("moved.pdf", "same bytes");
+        WriteMap("{}", $$"""{ "{{Hash(original)}}": "doc-a" }""");
+
+        Assert.Equal("doc-a", DocumentIdentity.Lookup(copy));
+        // A native save rewrites the copy between Core's Load and Save: it must keep its sidecar.
+        File.WriteAllText(copy, "annotated bytes");
+        Assert.Equal("doc-a", DocumentIdentity.Lookup(copy));
+    }
+
+    [Fact]
     public void Lookup_Is_Null_For_A_Document_RailReader2_Never_Opened()
     {
         WriteMap("{}");
