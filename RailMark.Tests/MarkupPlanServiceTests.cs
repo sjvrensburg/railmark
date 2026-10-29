@@ -23,10 +23,14 @@ public class MarkupPlanServiceTests
     }
 
     private sealed class FakePdfTextService(
-        Dictionary<int, string> pageTexts, Dictionary<int, List<CharBox>>? charBoxes = null) : IPdfTextService
+        Dictionary<int, string> pageTexts, Dictionary<int, List<CharBox>>? charBoxes = null,
+        HashSet<int>? ocrPages = null) : IPdfTextService
     {
         public PageText ExtractPageText(byte[] pdfBytes, int pageIndex, string? password = null)
-            => new(pageTexts.GetValueOrDefault(pageIndex, ""), charBoxes?.GetValueOrDefault(pageIndex) ?? []);
+            => new(pageTexts.GetValueOrDefault(pageIndex, ""), charBoxes?.GetValueOrDefault(pageIndex) ?? [])
+            {
+                FromOcr = ocrPages?.Contains(pageIndex) ?? false,
+            };
 
         public List<List<RectF>> GetTextRangeRects(byte[] pdfBytes, int pageIndex, List<(int CharStart, int CharLength)> ranges, string? password = null)
             => ranges.Select(r => new List<RectF> { new(10f, 20f + r.CharStart, 10f + r.CharLength, 30f + r.CharStart) }).ToList();
@@ -181,9 +185,11 @@ public class MarkupPlanServiceTests
         var plan = JsonSerializer.Deserialize<MarkupPlan>(File.ReadAllText(path), JsonOptions)!;
         Assert.Equal(Enum.GetValues<MarkupType>().ToHashSet(), plan.Entries.Select(e => e.Kind).ToHashSet());
 
-        // Against an empty page every entry must fail only for want of its quote or parent.
+        // Against unrelated text every entry must fail only for want of its quote or parent. (A blank
+        // page would fail for want of a text layer instead.)
         var (_, result) = MarkupPlanService.Resolve(
-            plan, new FakePdfService(pageCount: 10, pageSize: (600, 800)), new FakePdfTextService([]));
+            plan, new FakePdfService(pageCount: 10, pageSize: (600, 800)),
+            new FakePdfTextService(Enumerable.Range(0, 10).ToDictionary(i => i, _ => "Unrelated text.")));
         Assert.All(result.Entries, e =>
             Assert.True(e.Error!.StartsWith("Quote not found") || e.Error.StartsWith("No annotation with id"), e.Error));
     }
@@ -1473,6 +1479,87 @@ public class MarkupPlanServiceTests
         var (_, result) = ResolveTwoPages(new() { Page = 1, Quote = "a fresh batch of samples", Type = MarkupType.Highlight });
 
         Assert.Equal("Quote not found on page 1 (it occurs on page 2).", result.Entries[0].Error);
+    }
+
+    // --- Pages without native text ---
+
+    private static MarkupPlanApplyResult ResolveOnPages(MarkupEntry entry, Dictionary<int, string> pageTexts, HashSet<int>? ocrPages = null)
+        => MarkupPlanService.Resolve(
+            new MarkupPlan { Entries = [entry] },
+            new FakePdfService(pageCount: 2, pageSize: (600, 800)),
+            new FakePdfTextService(pageTexts, ocrPages: ocrPages)).result;
+
+    [Fact]
+    public void Resolve_Says_A_Page_Without_Text_Needs_A_Text_Layer()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = " \n " });
+
+        var entry = Assert.Single(result.Entries);
+        Assert.False(entry.Success);
+        Assert.StartsWith("Page 1 has no text layer", entry.Error);
+        Assert.Contains("railreader2 ocr", entry.Error);
+    }
+
+    [Fact]
+    public void Resolve_Points_At_The_Neighbour_Rather_Than_OCR_For_A_Blank_Page()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = "", [1] = "We fit the model." });
+
+        Assert.Equal("Quote not found on page 1 (it occurs on page 2).", result.Entries[0].Error);
+    }
+
+    [Fact]
+    public void Resolve_Warns_When_The_Match_Is_In_OCR_Text()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = "We fit the model." }, ocrPages: [0]);
+
+        var entry = Assert.Single(result.Entries);
+        Assert.True(entry.Success);
+        Assert.Equal("Matched OCR text on page 1: check the markup covers the intended words.", entry.Warning);
+    }
+
+    [Fact]
+    public void Resolve_Keeps_Other_Warnings_Alongside_The_OCR_Warning()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = RepeatedText }, ocrPages: [0]);
+
+        Assert.Contains("occurs 3 times", result.Entries[0].Warning);
+        Assert.Contains("Matched OCR text on page 1", result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Resolve_Warns_When_A_Page_Break_Match_Is_In_OCR_Text()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "repeated the whole measurement", Type = MarkupType.Highlight },
+            new() { [0] = "A second run of the experiment repeated the whole", [1] = "measurement with fresh samples." },
+            ocrPages: [1]);
+
+        var entry = Assert.Single(result.Entries);
+        Assert.True(entry.Success, entry.Error);
+        Assert.Equal(2, entry.EndPage);
+        Assert.Equal("Matched OCR text on page 2: check the markup covers the intended words.", entry.Warning);
+    }
+
+    [Fact]
+    public void Resolve_Does_Not_Warn_About_Native_Text()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the model", Type = MarkupType.Highlight },
+            new() { [0] = "We fit the model." });
+
+        Assert.Null(result.Entries[0].Warning);
+    }
+
+    [Fact]
+    public void Resolve_Blames_OCR_When_A_Quote_Is_Missing_From_OCR_Text()
+    {
+        var result = ResolveOnPages(new() { Page = 1, Quote = "the modal", Type = MarkupType.Highlight },
+            new() { [0] = "We fit the model." }, ocrPages: [0]);
+
+        Assert.StartsWith("Quote not found on page 1, whose text comes from OCR", result.Entries[0].Error);
     }
 
     [Fact]

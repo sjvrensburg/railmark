@@ -142,8 +142,10 @@ current one, keep following this file directly.
    ```
    This is not optional — it's the cheap way to catch a plan where most quotes fail to resolve
    before writing anything. In the JSON result, fix every entry with `"success": false` **and
-   every entry carrying a `warning`** — a warning means the quote occurs more than once on the
-   page and RailMark had to guess which one you meant (see "Repeated quotes" below). A dry run
+   every entry carrying a `warning`** — a warning usually means the quote occurs more than once on the
+   page and RailMark had to guess which one you meant (see "Repeated quotes" below). The exception
+   is `Matched OCR text on page N`, which no plan change can clear: check that entry's `context`
+   instead. A dry run
    also reports each match's surrounding text as `context`, with the match in `[[…]]`: skim it to
    confirm each quote landed on the passage you intended.
 
@@ -257,8 +259,14 @@ one per sentence. Marking everything is as unhelpful to the reader as marking no
 2. Correct the quote to match verbatim — or, for an `occurrence`/context error, fix the choice of
    match. An error ending `(it occurs on page M)` means the `page` number is wrong. A
    `Conflicts with entry N` error means two entries mark the same text differently: merge them.
+   An error ending `whose text comes from OCR …` means the page is a scan with a recognised text
+   layer, which may misread a word: quote a shorter stretch that avoids the misread.
 3. Re-run the whole corrected plan. Applying is idempotent: already-applied entries come back
    `"action": "unchanged"`, and an entry whose comment you changed comes back `"updated"`.
+
+If entries fail with `Page N has no text layer (is it a scan?)`, don't retry: no quote can match
+a page that has no text. Tell the user the PDF needs a text layer first. `railreader2 ocr <pdf>`
+writes a copy with one (`<name>_ocr.pdf`), and that copy is the file to export and mark up.
 
 ## Revising an earlier round
 

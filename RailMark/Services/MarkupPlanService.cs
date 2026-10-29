@@ -140,17 +140,27 @@ public static class MarkupPlanService
         var removalHint = replaceAuthor != null || replaceUnauthored || removeIds is { Count: > 0 }
             ? " (it may have been removed by --replace-author, --replace-unauthored or --remove-ids)."
             : ".";
-        var pages = new Dictionary<int, (NormalizedText Text, IReadOnlyList<CharBox> Chars)>();
-        (NormalizedText Text, IReadOnlyList<CharBox> Chars) Page(int pageIndex)
+        var pages = new Dictionary<int, (NormalizedText Text, IReadOnlyList<CharBox> Chars, bool Blank, bool FromOcr)>();
+        (NormalizedText Text, IReadOnlyList<CharBox> Chars, bool Blank, bool FromOcr) Page(int pageIndex)
         {
             if (!pages.TryGetValue(pageIndex, out var page))
             {
                 var extracted = textService.ExtractPageText(pdf.PdfBytes, pageIndex, password);
-                pages[pageIndex] = page = (NormalizedText.From(extracted.Text), extracted.CharBoxes ?? []);
+                pages[pageIndex] = page = (NormalizedText.From(extracted.Text), extracted.CharBoxes ?? [],
+                    string.IsNullOrWhiteSpace(extracted.Text), extracted.FromOcr);
             }
             return page;
         }
         NormalizedText PageText(int pageIndex) => Page(pageIndex).Text;
+
+        // OCR text can misread a word or box it loosely, so a match against it is worth a look.
+        string? OcrWarning(IEnumerable<Placement> placed)
+        {
+            var ocrPages = placed.Select(p => p.PageIndex).Distinct().Where(p => Page(p).FromOcr).Select(p => p + 1).ToList();
+            return ocrPages.Count == 0 ? null
+                : $"Matched OCR text on {(ocrPages.Count == 1 ? "page " : "pages ")}{string.Join('–', ocrPages)}: "
+                  + "check the markup covers the intended words.";
+        }
 
         // Pass 1 — locate every quote. Results are indexed by original plan position so the
         // report preserves plan order regardless of how geometry lookups are batched.
@@ -237,7 +247,7 @@ public static class MarkupPlanService
                 {
                     InReplyTo = entry.InReplyTo,
                     MatchCount = match.Value.MatchCount,
-                    Warning = match.Value.Warning,
+                    Warning = JoinWarnings(match.Value.Warning, OcrWarning(placements[index]!)),
                     Context = includeContext ? TextLocator.DescribeContext(page, match.Value.Match) : null,
                 };
                 continue;
@@ -261,6 +271,7 @@ public static class MarkupPlanService
                         InReplyTo = entry.InReplyTo,
                         MatchCount = 1,
                         EndPage = entry.Page + 1,
+                        Warning = OcrWarning(placements[index]!),
                         Context = includeContext
                             ? TextLocator.DescribeContext(page, split.Head) + $" ‖ page {entry.Page + 1}: "
                               + TextLocator.DescribeContext(nextPage, split.Tail)
@@ -270,9 +281,23 @@ public static class MarkupPlanService
                 }
             }
 
-            // The commonest cause of a missing quote is a page number off by one: say so.
+            // The commonest cause of a missing quote is a page number off by one: say so. Checked
+            // first, so a blank page in a text PDF points at the neighbour rather than at OCR.
             if (failure.MatchCount == 0 && FoundOnNeighbour(entry.Quote!, pageIndex) is { } neighbour)
                 failure = failure with { Error = $"Quote not found on page {entry.Page} (it occurs on page {neighbour + 1})." };
+            // A scan has no text to search: no plan can fix that, so say what will.
+            else if (failure.MatchCount == 0 && Page(pageIndex).Blank)
+                failure = failure with
+                {
+                    Error = $"Page {entry.Page} has no text layer (is it a scan?). Add one with "
+                            + "`railreader2 ocr <pdf>` and apply the plan to the copy it writes.",
+                };
+            else if (failure.MatchCount == 0 && Page(pageIndex).FromOcr)
+                failure = failure with
+                {
+                    Error = $"Quote not found on page {entry.Page}, whose text comes from OCR and may misread "
+                            + "words: try a shorter quote, or one without unusual characters.",
+                };
             results[index] = failure;
         }
 
@@ -399,8 +424,7 @@ public static class MarkupPlanService
 
             results[index] = results[index]! with
             {
-                Warning = nearDuplicate is null ? results[index]!.Warning
-                    : string.Join(' ', new[] { results[index]!.Warning, NearDuplicateWarning(nearDuplicate) }.Where(w => w != null)),
+                Warning = JoinWarnings(results[index]!.Warning, nearDuplicate is null ? null : NearDuplicateWarning(nearDuplicate)),
                 SpanCount = geometry[index].Sum(rects => rects.Count),
                 Action = actions.All(a => a == ActionUnchanged) ? ActionUnchanged
                     : actions.Contains(ActionAdded) ? ActionAdded
@@ -748,6 +772,9 @@ public static class MarkupPlanService
             Error = $"Conflicts with entry {otherIndex + 1} of this plan, which marks the same text "
                     + "with a different comment or colour. Merge them into one entry.",
         };
+
+    private static string? JoinWarnings(params string?[] warnings)
+        => warnings.Any(w => w != null) ? string.Join(' ', warnings.Where(w => w != null)) : null;
 
     private static MarkupEntryResult Failure(MarkupEntry entry, string error)
         => new(entry.Page, entry.Quote, entry.Type, false, error) { Update = entry.Update };
