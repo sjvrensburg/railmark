@@ -38,7 +38,7 @@ carry a real `/IRT`, removal that takes a comment's replies with it, the no-text
 OCR warning, sharing RailReader2's annotation sidecar). Check the version is recent enough:
 
 ```bash
-need=0.17.0; have=$(railmark --version | awk '{print $2}')
+need=0.17.3; have=$(railmark --version | awk '{print $2}')
 [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" = "$need" ] && echo "ok: $have" || echo "too old: $have"
 ```
 

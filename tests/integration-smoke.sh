@@ -413,8 +413,11 @@ jcheck "both notes in the PDF" "${WORK}/twonotes.ann.json" '[.annotations[] | se
 jcheck "both notes found on re-apply" "${WORK}/twonotes2.out" 'all(.[]; .action == "unchanged")'
 # PDFium writes each note as a 24pt square /Rect; the raw PDF is the only place to read it back.
 # Both icons sit just right of the text column (x≈452 on the fixture), not at the page edge, and
-# the second is pushed below the first rather than onto it.
-grep -ao '/Rect\[[^]]*\]/Subtype/Text' "${WORK}/twonotes.pdf" | sed 's#/Rect\[ *##; s#\]/Subtype/Text##' > "${WORK}/twonotes.rects"
+# the second is pushed below the first rather than onto it. Core's post-pass moves each new note
+# into an indirect object by incremental update, so PDFium's superseded copy is still in the file,
+# byte-identical: drop exact repeats (two notes really on one spot would still collapse to one line).
+grep -ao '/Rect\[[^]]*\]/Subtype/Text' "${WORK}/twonotes.pdf" | sed 's#/Rect\[ *##; s#\]/Subtype/Text##' \
+    | awk '!seen[$0]++' > "${WORK}/twonotes.rects"
 if [ "$(wc -l < "${WORK}/twonotes.rects")" = 2 ] \
    && awk '{ if ($1 < 452 || $1 > 470) exit 1 }' "${WORK}/twonotes.rects" \
    && awk 'NR == 1 { x = $1; y = $2 } NR == 2 { dx = $1 - x; if (dx < -1 || dx > 1) exit 1; d = y - $2; if (d < 0) d = -d; if (d < 24) exit 1 }' "${WORK}/twonotes.rects"; then
@@ -640,6 +643,46 @@ if "${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/op2.json" --opacity 3 -o 
 else
     echo "  ok   --opacity out of range rejected"
 fi
+
+# --- 14. Re-attribution and indirect /Annots -------------------------------------
+# #54: an author change on a note used to be reported "updated" but never written (/T untouched),
+# and an author-only change on anything looked unchanged to the writer. #55: PDFium writes new
+# annotations as direct dictionaries inside /Annots, which ISO 32000 forbids and MuPDF/PyMuPDF
+# ignores; Core's post-pass now moves them into indirect objects.
+echo ""
+section "re-attribution and indirect /Annots"
+cat > "${WORK}/attr.json" <<'PLAN'
+{"entries":[
+ {"page":1,"quote":"RailMark test suite","type":"note","comment":"note A","author":"Alice"},
+ {"page":1,"quote":"measured twice","type":"highlight","comment":"hl B","author":"Alice"}]}
+PLAN
+"${RAILMARK[@]}" "$FIXTURE" --apply-markup "${WORK}/attr.json" -o "${WORK}/attr.pdf" > /dev/null 2>&1
+# The promotion is an incremental update, so PDFium's superseded direct copies are still in the
+# file. Re-applying an empty plan is a plain PDFium rewrite, which keeps live objects only (and
+# never turns direct into indirect); then no /Annots array may hold an inline dictionary.
+echo '{"entries":[]}' > "${WORK}/empty.json"
+check_indirect() {
+    "${RAILMARK[@]}" "$2" --apply-markup "${WORK}/empty.json" -o "${WORK}/flat.pdf" > /dev/null 2>&1
+    grep -ao '/Annots *\[[^]]*\]' "${WORK}/flat.pdf" > "${WORK}/flat.annots" || true
+    if [ -s "${WORK}/flat.annots" ] && ! grep -q '<<' "${WORK}/flat.annots"; then
+        echo "  ok   $1"
+    else
+        echo "  FAIL $1 — got: $(cut -c1-80 "${WORK}/flat.annots" | tr '\n' ';')" >&2
+        failures=$((failures + 1))
+    fi
+}
+check_indirect "new annotations are indirect objects" "${WORK}/attr.pdf"
+"${RAILMARK[@]}" "${WORK}/attr.pdf" --format json -o - > "${WORK}/attr.ann.json" 2>/dev/null
+jq '{entries: [.annotations[] | select(.author == "Alice") | {page, update: .id, author: "Bob"}]}' \
+    "${WORK}/attr.ann.json" > "${WORK}/attr-upd.json"
+"${RAILMARK[@]}" "${WORK}/attr.pdf" --apply-markup "${WORK}/attr-upd.json" -o "${WORK}/attr2.pdf" > "${WORK}/attr2.out" 2>/dev/null
+jcheck "author-only updates report updated" "${WORK}/attr2.out" 'length == 2 and all(.[]; .action == "updated")'
+"${RAILMARK[@]}" "${WORK}/attr2.pdf" --format json -o - > "${WORK}/attr2.ann.json" 2>/dev/null
+jcheck "note and highlight re-attributed" "${WORK}/attr2.ann.json" \
+    '[.annotations[] | select(.comment == "note A" or .comment == "hl B") | .author] == ["Bob", "Bob"]'
+jcheck "re-attribution kept the ids" "${WORK}/attr2.ann.json" \
+    "[.annotations[] | select(.author == \"Bob\") | .id] | sort == $(jq -c '[.entries[].update] | sort' "${WORK}/attr-upd.json")"
+check_indirect "updated annotations stay indirect" "${WORK}/attr2.pdf"
 
 echo ""
 if [ "$failures" -ne 0 ]; then
