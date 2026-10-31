@@ -32,8 +32,9 @@ step 1 of the workflow, check:
 railmark --version
 ```
 
-This copy of the skill documents **railmark 0.17.0 or newer**; older builds lack features it
-relies on (`update` by id, the near-duplicate warning, `--opacity`, `--remove-ids`, replies that
+This copy of the skill documents **railmark 0.17.3 or newer**; older builds lack features it
+relies on (`update` by id — before 0.17.3 an `author` change on a note was reported but not
+written — the near-duplicate warning, `--opacity`, `--remove-ids`, replies that
 carry a real `/IRT`, removal that takes a comment's replies with it, the no-text-layer error and
 OCR warning, sharing RailReader2's annotation sidecar). Check the version is recent enough:
 
