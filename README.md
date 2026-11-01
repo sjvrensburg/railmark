@@ -242,6 +242,40 @@ Beyond the basics:
 
 See `.claude/skills/railmark-markup-plan/references/markup-plan-schema.md` for the full schema.
 
+### Word review → PDF review (`--from-docx`)
+
+```bash
+railmark --from-docx reviewed.docx -o reviewed.pdf
+```
+
+Converts a Word document that carries comments and tracked changes into a PDF of its **original**
+text, with the review written as native PDF annotations — the way Acrobat models text edits:
+
+| Word | PDF |
+|---|---|
+| Comment on a range | Highlight carrying the comment (author and date kept) |
+| Reply | Sticky note threaded under the comment (`/IRT`) |
+| Resolved comment | `/State Completed` |
+| Comment with no range | Sticky note |
+| Deletion | Strikeout |
+| Deletion + insertion (same author, adjacent) | Replacement strikeout (`Replace with: …`) |
+| Insertion | Sticky note at the insertion point (`Insert: “…”`) |
+| Move | Strikeout at the source, note at the destination |
+| Run-formatting change | Underline describing it (`Formatted: Bold`) |
+
+Needs **LibreOffice** (`soffice` on `PATH`, `$RAILMARK_SOFFICE`, or `--soffice <path>`), which
+renders the document; the layout is LibreOffice's, so pagination can differ from Word's. Install the
+Office-metric fonts too (Debian/Ubuntu: `fonts-crosextra-carlito fonts-crosextra-caladea
+fonts-liberation`): without them Calibri/Cambria text falls back to whatever fontconfig picks, which
+changes the layout and can be a font with very tall line boxes. Each
+comment and change is located exactly — railmark plants an invisible bookmark at every anchor
+before rendering and reads the bookmarks back as PDF named destinations — so repeated phrases and
+ranges over a page break land where they belong. Per-item results go to stdout as JSON (exit `2` if
+any item could not be placed). Not yet covered: comments or changes in footnotes, headers and text
+boxes are rendered but may not be placed; table-row insertions/deletions, paragraph-property and
+section changes are rendered as they currently are, unannotated. `--keep-base-docx <path>` saves
+the prepared document for diagnosis.
+
 ## Skill for AI agents
 
 For Claude Code / agent-driven document review, use the `railmark-markup-plan` skill.
@@ -276,6 +310,7 @@ rather than re-deriving the schema from scratch each time.
 ```bash
 dotnet test                                            # unit tests
 ./tests/integration-smoke.sh dotnet run --project RailMark/ --
+./tests/docx-smoke.sh dotnet run --project RailMark/ --  # --from-docx; needs LibreOffice, else SKIP (CI installs it)
 ```
 
 The integration script drives a real build against `tests/fixtures/sample.pdf` — a small,

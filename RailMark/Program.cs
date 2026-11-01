@@ -7,6 +7,7 @@ using RailReader.Export;
 using RailReader.Renderer.Skia;
 using RailMark.Models;
 using RailMark.Services;
+using RailMark.Services.Docx;
 
 if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
 {
@@ -43,6 +44,9 @@ string? authorArg = null;
 string? excludeAuthorArg = null;
 string? sinceArg = null;
 AcceleratorPreference accelerator = AcceleratorPreference.Cpu;
+bool fromDocx = false;
+string? sofficePath = null;
+string? keepBaseDocx = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -77,6 +81,15 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--apply-markup" when i + 1 < args.Length:
             markupPlanPath = args[++i];
+            break;
+        case "--from-docx":
+            fromDocx = true;
+            break;
+        case "--soffice" when i + 1 < args.Length:
+            sofficePath = args[++i];
+            break;
+        case "--keep-base-docx" when i + 1 < args.Length:
+            keepBaseDocx = args[++i];
             break;
         case "--dry-run":
             dryRun = true;
@@ -142,7 +155,7 @@ for (int i = 0; i < args.Length; i++)
 
 if (string.IsNullOrWhiteSpace(pdfPath))
 {
-    Console.Error.WriteLine("Error: No PDF path specified.");
+    Console.Error.WriteLine(fromDocx ? "Error: No .docx path specified." : "Error: No PDF path specified.");
     PrintUsage();
     return 1;
 }
@@ -154,6 +167,23 @@ if (!File.Exists(pdfPath))
 }
 
 bool stdoutMode = outputPath == "-";
+
+if (fromDocx && (exportMode || markupPlanPath != null || colorArg != null || includeImages || pagesArg != null
+                 || jsonFormat || inPlace || dryRun || (authorArg ?? excludeAuthorArg ?? sinceArg) != null))
+{
+    Console.Error.WriteLine("Error: --from-docx takes only -o, --soffice and --keep-base-docx.");
+    return 1;
+}
+if (!fromDocx && (sofficePath != null || keepBaseDocx != null))
+{
+    Console.Error.WriteLine("Error: --soffice and --keep-base-docx are only valid with --from-docx.");
+    return 1;
+}
+if (fromDocx && stdoutMode)
+{
+    Console.Error.WriteLine("Error: -o - (stdout) is not supported with --from-docx; PDF output must be a file.");
+    return 1;
+}
 if (stdoutMode && includeImages)
 {
     Console.Error.WriteLine("Error: --images is not compatible with -o - (stdout output).");
@@ -236,7 +266,7 @@ if (colorArg != null)
     }
 }
 
-if (!stdoutMode && markupPlanPath == null)
+if (!stdoutMode && markupPlanPath == null && !fromDocx)
     outputPath ??= exportMode
         ? Path.ChangeExtension(pdfPath, null) + "-export.md"
         : Path.ChangeExtension(pdfPath, null) + (jsonFormat ? "-annotations.json" : "-annotations.md");
@@ -250,6 +280,10 @@ var factory = new SkiaPdfServiceFactory();
 AnnotationService.Default.DocumentKeyResolver = DocumentIdentity.ReadOnlyResolver;
 AnnotationService.Default.OnResolverFailure = (path, ex) =>
     Console.Error.WriteLine($"Warning: {path} — could not identify the document for its annotation sidecar: {ex.Message}");
+
+// --- From-docx mode: render a Word document's original text, with its review as PDF annotations ---
+if (fromDocx)
+    return DocxImport.Run(pdfPath, outputPath ?? Path.ChangeExtension(pdfPath, ".pdf"), sofficePath, keepBaseDocx, factory);
 
 // --- Apply-markup mode: write AI-authored PDF markup from a JSON plan ---
 if (markupPlanPath != null)
@@ -798,6 +832,16 @@ static void PrintUsage()
                                none (default: 0.35 for highlights, 1 for the other types).
           --dry-run            With --apply-markup, resolve and report only; do not write.
                                The report then also shows the text around each match
+          --from-docx          Treat the input as a Word .docx: render its ORIGINAL text to PDF
+                               (every tracked change rejected) with LibreOffice and write its
+                               comments, replies and tracked changes as native PDF annotations
+                               (default output: <docx-stem>.pdf, or -o <path>). Reports per-item
+                               results as JSON on stdout. Needs LibreOffice (soffice)
+          --soffice <path>     With --from-docx, the LibreOffice soffice binary (default:
+                               $RAILMARK_SOFFICE, then PATH, then the usual install locations)
+          --keep-base-docx <path>
+                               With --from-docx, also save the prepared document LibreOffice
+                               rendered (changes rejected, anchors added) — for diagnosis
           --version            Show the railmark version
           -h, --help           Show this help
         """);
