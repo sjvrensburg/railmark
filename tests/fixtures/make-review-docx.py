@@ -8,6 +8,11 @@ insertions and deletions, a deletion over the page break, an inserted paragraph,
 change, a move). A running header and footer test that a range continued over a page break
 does not pick them up.
 
+Layout must not depend on the machine's fonts: the text is set in Liberation Serif (CI installs
+fonts-liberation), and the two ranges that must cross a page break each contain a hard page
+break, so they cross one whatever the metrics. Left to the default font, LibreOffice substitutes
+whatever the machine has for Calibri -- on a bare runner a maths font with huge line boxes.
+
 Usage: make-review-docx.py <output.docx>
 """
 import zipfile, sys
@@ -31,8 +36,9 @@ body.append(p(r("A point comment sits here"),f'<w:r><w:commentReference w:id="4"
 body.append(p(r("Resolved: "),cs(5),r("this was fixed"),ce(5),r(".")))
 body.append(p(ins(30,"Gina","A whole inserted paragraph."),ppr=f'<w:pPr><w:rPr><w:ins w:id="31" w:author="Gina" {D}/></w:rPr></w:pPr>'))
 body.append(f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders><w:top w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/><w:insideV w:val="single" w:sz="4"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc>{p(r("Cell A1"))}</w:tc><w:tc>{p(r("Cell "),cs(6),r("B1 value"),ce(6))}</w:tc></w:tr></w:tbl>')
-for k in range(9): body.append(p(r(filler*3)))
-body.append(p(r(filler*2+"Here begins "),cs(7),r("a comment that runs "+filler*4+"until here"),ce(7),r(". And "),dele(40,"Hank","a deletion that also runs "+filler*3+"over the break "),r("ends.")))
+PAGE='<w:r><w:br w:type="page"/></w:r>'
+for k in range(3): body.append(p(r(filler*3)))
+body.append(p(r(filler+"Here begins "),cs(7),r("a comment that runs "+filler),PAGE,r(filler+"until here"),ce(7),r(". And "),f'<w:del w:id="40" w:author="Hank" {D}><w:r><w:delText xml:space="preserve">a deletion that also runs {filler}</w:delText></w:r><w:r><w:br w:type="page"/></w:r><w:r><w:delText xml:space="preserve">{filler}over the break </w:delText></w:r></w:del>',r("ends.")))
 body.append(p(r("Final paragraph: the moved text lands here: "),f'<w:moveTo w:id="22" w:author="Frank" {D}>{r("Moved sentence. ")}</w:moveTo>'))
 sect='<w:sectPr><w:headerReference w:type="default" r:id="rIdH"/><w:footerReference w:type="default" r:id="rIdF"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
 doc=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{"".join(body)}{sect}</w:body></w:document>'
@@ -41,11 +47,14 @@ comments=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments {W
 cx=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w15:commentsEx {W}><w15:commentEx w15:paraId="00000001" w15:done="0"/><w15:commentEx w15:paraId="00000002" w15:paraIdParent="00000001" w15:done="0"/><w15:commentEx w15:paraId="00000005" w15:done="1"/></w15:commentsEx>'
 hdr=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr {W}>{p(r("RUNNING HEADER TEXT"))}</w:hdr>'
 ftr=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr {W}>{p(r("Running footer text"))}</w:ftr>'
-ct='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/><Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>'''
+styles=f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr>'\
+    '<w:rFonts w:ascii="Liberation Serif" w:hAnsi="Liberation Serif" w:cs="Liberation Serif" w:eastAsia="Liberation Serif"/>'\
+    '<w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>'
+ct='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/><Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>'''
 rels='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'''
-drels='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/><Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/><Relationship Id="rIdH" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>'''
+drels='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/><Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/><Relationship Id="rIdS" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rIdH" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>'''
 with zipfile.ZipFile(sys.argv[1],'w') as z:
-    for n,c in [('[Content_Types].xml',ct),('_rels/.rels',rels),('word/document.xml',doc),('word/_rels/document.xml.rels',drels),('word/comments.xml',comments),('word/commentsExtended.xml',cx),('word/header1.xml',hdr),('word/footer1.xml',ftr)]:
+    for n,c in [('[Content_Types].xml',ct),('_rels/.rels',rels),('word/document.xml',doc),('word/_rels/document.xml.rels',drels),('word/styles.xml',styles),('word/comments.xml',comments),('word/commentsExtended.xml',cx),('word/header1.xml',hdr),('word/footer1.xml',ftr)]:
         info = zipfile.ZipInfo(n, date_time=(2026, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         z.writestr(info, c)

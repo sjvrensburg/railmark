@@ -99,8 +99,10 @@ expect "a comment over the page break is one markup spanning pp. 1–2, without 
         and (.quote | test(\"RUNNING HEADER|Running footer\") | not))] | length == 1"
 expect "deletion → strikeout" \
     "[$A | select(.type == \"strikeout\" and .quote == \"remove this phrase,\" and .author == \"Dave\")] | length == 1"
-expect "deletion over the page break" \
-    "[$A | select(.type == \"strikeout\" and .author == \"Hank\" and (.quote | startswith(\"a deletion that also runs\")) and (.quote | endswith(\"over the break\")))] | length == 1"
+expect "deletion over the page break is one strikeout spanning pp. 2–3" \
+    "[$A | select(.type == \"strikeout\" and .author == \"Hank\" and .page == 2 and .endPage == 3
+        and (.quote | startswith(\"a deletion that also runs\")) and (.quote | endswith(\"over the break\"))
+        and (.quote | test(\"RUNNING HEADER|Running footer\") | not))] | length == 1"
 expect "insertions → notes carrying the inserted text" \
     "([$A | select(.type == \"note\" and .comment == \"Insert: “This sentence was inserted.”\")] | length == 1)
      and ([$A | select(.type == \"note\" and .comment == \"Insert: “A whole inserted paragraph.”\")] | length == 1)"

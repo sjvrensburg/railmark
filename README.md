@@ -264,7 +264,10 @@ text, with the review written as native PDF annotations — the way Acrobat mode
 | Run-formatting change | Underline describing it (`Formatted: Bold`) |
 
 Needs **LibreOffice** (`soffice` on `PATH`, `$RAILMARK_SOFFICE`, or `--soffice <path>`), which
-renders the document; the layout is LibreOffice's, so pagination can differ from Word's. Each
+renders the document; the layout is LibreOffice's, so pagination can differ from Word's. Install the
+Office-metric fonts too (Debian/Ubuntu: `fonts-crosextra-carlito fonts-crosextra-caladea
+fonts-liberation`): without them Calibri/Cambria text falls back to whatever fontconfig picks, which
+changes the layout and can be a font with very tall line boxes. Each
 comment and change is located exactly — railmark plants an invisible bookmark at every anchor
 before rendering and reads the bookmarks back as PDF named destinations — so repeated phrases and
 ranges over a page break land where they belong. Per-item results go to stdout as JSON (exit `2` if
