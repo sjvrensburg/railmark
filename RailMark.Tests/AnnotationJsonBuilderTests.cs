@@ -85,6 +85,38 @@ public class AnnotationJsonBuilderTests
     }
 
     [Fact]
+    public void Acrobat_Replace_Text_Pair_Becomes_One_Replace_Record()
+    {
+        // A caret with the new text, and a strikeout over the old text grouped to it.
+        var file = MakeFile(
+            (0, new CaretAnnotation { X = 60, Y = 102, W = 5, H = 5, NativeId = "c1", Contents = "red", Author = "Carol", Subject = "Replace Text" }),
+            (0, new StrikeOutAnnotation
+            {
+                Rects = [new(10, 100, 50, 10)], NativeId = "s1", InReplyTo = "c1", ReplyType = AnnotationReplyType.Group,
+            }));
+        var texts = new Dictionary<(int, int), string> { [(0, 1)] = "brown" };
+
+        var record = Assert.Single(new AnnotationJsonBuilder(file, "doc.pdf", [], texts).BuildExport().Annotations);
+
+        Assert.Equal("replace", record.Type);
+        Assert.Equal("brown", record.Quote);
+        Assert.Equal("red", record.Replacement);
+        Assert.Equal("Carol", record.Author);   // from the caret, the strikeout has none
+        Assert.Null(record.InReplyTo);
+    }
+
+    [Fact]
+    public void A_Caret_On_Its_Own_Is_A_Caret_Record()
+    {
+        var file = MakeFile((0, new CaretAnnotation { X = 60, Y = 102, W = 5, H = 5, NativeId = "c1", Contents = "really", Subject = "Inserted Text" }));
+
+        var record = Assert.Single(new AnnotationJsonBuilder(file, "doc.pdf", []).BuildExport().Annotations);
+
+        Assert.Equal("caret", record.Type);
+        Assert.Equal("really", record.Comment);
+    }
+
+    [Fact]
     public void Note_Body_Comes_From_Text_Or_Contents()
     {
         var file = MakeFile(

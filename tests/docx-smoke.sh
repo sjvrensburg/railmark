@@ -89,6 +89,8 @@ echo "== read back"
 A='.annotations[]'
 expect "the original text is rendered (deleted 'three' is on the page, struck through as a replacement)" \
     "[$A | select(.type == \"replace\" and .quote == \"three\" and .replacement == \"four\" and .author == \"Carol\")] | length == 1"
+expect "the replacement is Acrobat's Replace Text: a strikeout grouped to a caret, not RailMark's tagged strikeout" \
+    "[$A | select(.type == \"replace\" and .quote == \"three\" and (.id | endswith(\"-strike\")))] | length == 1"
 expect "comment → highlight over exactly its range" \
     "[$A | select(.type == \"highlight\" and .quote == \"brown fox\" and .author == \"Alice\" and .comment == \"Is \\\"brown\\\" the right colour?\")] | length == 1"
 expect "the reply is threaded under its comment" \
@@ -111,14 +113,14 @@ expect "deletion over the page break is one strikeout spanning pp. 2–3" \
     "[$A | select(.type == \"strikeout\" and .author == \"Hank\" and .page == 2 and .endPage == 3
         and (.quote | startswith(\"a deletion that also runs\")) and (.quote | endswith(\"over the break\"))
         and (.quote | test(\"RUNNING HEADER|Running footer\") | not))] | length == 1"
-expect "insertions → notes carrying the inserted text" \
-    "([$A | select(.type == \"note\" and .comment == \"Insert: “This sentence was inserted.”\")] | length == 1)
-     and ([$A | select(.type == \"note\" and .comment == \"Insert: “A whole inserted paragraph.”\")] | length == 1)"
+expect "insertions → carets carrying the inserted text (Acrobat's Inserted Text)" \
+    "([$A | select(.type == \"caret\" and .comment == \"This sentence was inserted.\" and .subject == \"Inserted Text\")] | length == 1)
+     and ([$A | select(.type == \"caret\" and .comment == \"A whole inserted paragraph.\")] | length == 1)"
 expect "format change → underline describing it" \
     "[$A | select(.type == \"underline\" and .quote == \"important\" and .comment == \"Formatted: Bold\")] | length == 1"
-expect "move → strikeout at the source and a note at the destination" \
+expect "move → strikeout at the source and a caret at the destination" \
     "([$A | select(.type == \"strikeout\" and .quote == \"Moved sentence.\")] | length == 1)
-     and ([$A | select(.type == \"note\" and .comment == \"Moved here: “Moved sentence.”\")] | length == 1)"
+     and ([$A | select(.type == \"caret\" and .comment == \"Moved sentence.\" and .subject == \"Moved Text\")] | length == 1)"
 expect "Word's dates survive" \
     "[$A | select(.author == \"Bob\" and (.created // .date // \"\" | startswith(\"2026-10-31\")))] | length == 1"
 

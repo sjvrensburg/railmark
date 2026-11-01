@@ -258,9 +258,9 @@ text, with the review written as native PDF annotations — the way Acrobat mode
 | Resolved comment | `/State Completed` |
 | Comment with no range | Sticky note |
 | Deletion | Strikeout |
-| Deletion + insertion (same author, adjacent) | Replacement strikeout (`Replace with: …`) |
-| Insertion | Sticky note at the insertion point (`Insert: “…”`) |
-| Move | Strikeout at the source, note at the destination |
+| Deletion + insertion (same author, adjacent) | Acrobat's *Replace Text*: a caret carrying the new text, with a strikeout over the old text grouped to it (`/RT /Group`) |
+| Insertion | Acrobat's *Inserted Text*: a caret at the insertion point carrying the text |
+| Move | Strikeout at the source, caret at the destination |
 | Run-formatting change | Underline describing it (`Formatted: Bold`) |
 
 Needs **LibreOffice** (`soffice` on `PATH`, `$RAILMARK_SOFFICE`, or `--soffice <path>`), which
