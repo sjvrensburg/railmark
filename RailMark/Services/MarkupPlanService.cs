@@ -870,7 +870,7 @@ public static class MarkupPlanService
     /// vertically overlap the running line's bounding box — characters on the same line always
     /// overlap vertically with their neighbours, while a wrapped-to-next-line rect does not.
     /// </summary>
-    private static List<RectF> MergeLineRects(List<RectF> rects)
+    internal static List<RectF> MergeLineRects(List<RectF> rects)
     {
         if (rects.Count == 0) return rects;
 
@@ -925,7 +925,7 @@ public static class MarkupPlanService
     /// pushing any other note in that spot down, so a thread stays contiguous and reads top to
     /// bottom.
     /// </summary>
-    private static void PlaceReply(
+    internal static void PlaceReply(
         TextNoteAnnotation note, Annotation parent, IReadOnlyList<CharBox> chars,
         (double Width, double Height) page, AnnotationFile file, int pageIndex)
     {
@@ -944,7 +944,7 @@ public static class MarkupPlanService
     private static void Move(TextNoteAnnotation note, NoteSpot spot) => (note.X, note.Y) = (spot.X, spot.Y);
 
     /// <summary>The icons of the notes already on the page, which a new note must not cover.</summary>
-    private static List<RectF> OccupiedIcons(AnnotationFile file, int pageIndex)
+    internal static List<RectF> OccupiedIcons(AnnotationFile file, int pageIndex)
         => file.Pages.GetValueOrDefault(pageIndex)?.OfType<TextNoteAnnotation>().Select(AnchorRect).ToList() ?? [];
 
     private static RectF AnchorRect(TextNoteAnnotation note) => NotePlacement.IconRect(new NoteSpot(note.X, note.Y));
@@ -1036,7 +1036,7 @@ public static class MarkupPlanService
     private static bool OpacityIsExplicit(MarkupEntry entry, float? defaultOpacity)
         => entry.Kind != MarkupType.Note && (entry.Opacity ?? defaultOpacity) is not null;
 
-    private static TextMarkupAnnotation BuildTextMarkup(MarkupType type, List<RectF> rects)
+    internal static TextMarkupAnnotation BuildTextMarkup(MarkupType type, List<RectF> rects)
     {
         // Highlight/StrikeOut are drawn across the full glyph box, but Underline/Squiggly are a
         // stroke beneath the text, so passing them the same full-height quad draws the line at
