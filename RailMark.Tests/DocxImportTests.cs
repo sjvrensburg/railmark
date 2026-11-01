@@ -240,6 +240,16 @@ public class DocxImportTests : IDisposable
         Assert.Equal(DocxItemKind.Insertion, Assert.Single(review.Items).Kind);
     }
 
+    [Fact]
+    public void Soffice_Does_Not_Inherit_The_Bundled_Library_Directory()
+    {
+        // The tarball/AppImage launcher prepends its bin/ to LD_LIBRARY_PATH.
+        Assert.Equal("/usr/lib/extra", LibreOfficeConverter.WithoutOwnBundle("/opt/railmark/bin:/usr/lib/extra", "/opt/railmark/bin/"));
+        Assert.Null(LibreOfficeConverter.WithoutOwnBundle("/opt/railmark/bin/", "/opt/railmark/bin"));
+        Assert.Null(LibreOfficeConverter.WithoutOwnBundle(null, "/opt/railmark/bin"));
+        Assert.Equal("/a:/b", LibreOfficeConverter.WithoutOwnBundle("/a::/b", "/opt/railmark/bin"));
+    }
+
     // ------------------------------------------------------------ geometry
 
     /// <summary>One line of text as a PageText: 5pt-wide glyphs, x-height letters shorter than ascenders.</summary>

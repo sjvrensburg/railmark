@@ -97,6 +97,13 @@ jobs:
       - name: Build tarball
         run: ./build-tarball.sh --include-model "models/${MODEL_NAME}"
 
+      # --from-docx runs soffice as a child of the packaged binary, whose launcher puts the
+      # bundled native libraries on LD_LIBRARY_PATH — so check it through each artifact.
+      - name: Install LibreOffice
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer fonts-liberation
+
       - name: Smoke test AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
@@ -108,6 +115,7 @@ jobs:
           "$appimage" --help > /dev/null
           # Exercise the real artifact end to end, not just its entry point.
           ./tests/integration-smoke.sh "$appimage"
+          RAILMARK_REQUIRE_SOFFICE=1 ./tests/docx-smoke.sh "$appimage"
 
       - name: Smoke test tarball
         run: |
@@ -118,6 +126,7 @@ jobs:
           "$launcher" --version
           "$launcher" --help > /dev/null
           ./tests/integration-smoke.sh "$launcher"
+          RAILMARK_REQUIRE_SOFFICE=1 ./tests/docx-smoke.sh "$launcher"
           # The bundled model is the whole reason these artifacts are ~160 MB;
           # a silently missing one would degrade --export with no other signal.
           test -f "$(dirname "$launcher")/models/${MODEL_NAME}"
