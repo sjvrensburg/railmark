@@ -74,6 +74,7 @@ public class AnnotationJsonBuilder(
         // quote, so the record re-applies as a single plan entry.
         var continuations = ContinuationMarkup.Pair(annotations);
         var folded = continuations.Values.ToHashSet();
+        var (replacedBy, pairedCarets) = CaretReplacements();
 
         var ordered = annotations.Pages
             .SelectMany(p => p.Value.Select((a, i) => (page: p.Key, annotIdx: i, annotation: a)))
@@ -84,6 +85,8 @@ public class AnnotationJsonBuilder(
         foreach (var (page, annotIdx, annotation) in ordered)
         {
             if (folded.Contains((page, annotIdx))) continue;
+            // A caret that a strikeout replaces is reported with it, as one "replace" record.
+            if (annotation is CaretAnnotation c && pairedCarets.Contains(c)) continue;
 
             var quote = annotation is TextMarkupAnnotation ? MarkupText(page, annotIdx) : null;
             int? endPage = null;
@@ -95,10 +98,16 @@ public class AnnotationJsonBuilder(
             }
             string? comment = annotation.EffectiveContents;
             string? replacement = null;
+            CaretAnnotation? replacingCaret = null;
             if (ReplacementMarkup.TryParse(annotation, out var parsedReplacement, out var parsedComment))
             {
                 replacement = parsedReplacement;
                 comment = parsedComment;
+            }
+            else if (replacedBy.TryGetValue((page, annotIdx), out replacingCaret))
+            {
+                replacement = TextLocator.CleanText(replacingCaret.Contents ?? "");
+                comment = annotation.Contents;
             }
 
             records.Add(new AnnotationRecord
@@ -113,9 +122,10 @@ public class AnnotationJsonBuilder(
                 Replacement = replacement,
                 Color = annotation.Color,
                 Opacity = MathF.Round(annotation.Opacity, 2),
-                Author = NullIfEmpty(annotation.Author),
+                Author = NullIfEmpty(annotation.Author) ?? NullIfEmpty(replacingCaret?.Author),
                 Heading = headings.TitleOf(headings.KeyFor(page, HeadingIndex.SortY(annotation))),
-                InReplyTo = NullIfEmpty(ReplyMarkup.ParentOf(annotation)),
+                // A replacement's link to its caret is how the pair is stored, not a reply.
+                InReplyTo = replacingCaret != null ? null : NullIfEmpty(ReplyMarkup.ParentOf(annotation)),
                 // The replacement tag is RailMark's own bookkeeping, already expressed by type.
                 Subject = replacement != null ? null : NullIfEmpty(annotation.Subject),
                 State = annotation.State == ReviewState.None ? null : annotation.State.ToString().ToLowerInvariant(),
@@ -126,6 +136,28 @@ public class AnnotationJsonBuilder(
         }
 
         return new AnnotationExport(sourceName, records);
+    }
+
+    /// <summary>
+    /// Acrobat's "Replace Text": a caret carrying the new text, with a strikeout over the old text
+    /// linked to it by /IRT (<c>/RT /Group</c> from Acrobat and RailMark's <c>--from-docx</c>). The
+    /// same pairing as <see cref="MarkdownBuilder"/>'s: each caret pairs with the first such strikeout.
+    /// </summary>
+    private (Dictionary<(int page, int annotIdx), CaretAnnotation> ReplacedBy, HashSet<CaretAnnotation> Paired) CaretReplacements()
+    {
+        var caretsById = new Dictionary<string, CaretAnnotation>(StringComparer.Ordinal);
+        foreach (var caret in annotations.Pages.Values.SelectMany(l => l).OfType<CaretAnnotation>())
+            if (!string.IsNullOrEmpty(caret.NativeId)) caretsById.TryAdd(caret.NativeId!, caret);
+
+        var replacedBy = new Dictionary<(int, int), CaretAnnotation>();
+        var paired = new HashSet<CaretAnnotation>(ReferenceEqualityComparer.Instance);
+        if (caretsById.Count == 0) return (replacedBy, paired);
+        foreach (var (page, list) in annotations.Pages.OrderBy(p => p.Key))
+            for (int i = 0; i < list.Count; i++)
+                if (list[i] is StrikeOutAnnotation { InReplyTo: { Length: > 0 } parent }
+                    && caretsById.TryGetValue(parent, out var caret) && paired.Add(caret))
+                    replacedBy[(page, i)] = caret;
+        return (replacedBy, paired);
     }
 
     /// <summary>The name a markup plan uses for the type, or a descriptive one for the rest.</summary>

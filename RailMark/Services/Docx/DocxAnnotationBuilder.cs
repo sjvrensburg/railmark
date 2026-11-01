@@ -31,10 +31,11 @@ internal sealed record DocxItemResult
 /// <remarks>
 /// Mapping, in the Acrobat model (the PDF shows the original text):
 /// comment → highlight carrying the comment; reply → sticky note threaded under it (/IRT);
-/// comment with no range → sticky note; deletion → strikeout; deletion + insertion → RailMark's
-/// replacement strikeout (<see cref="ReplacementMarkup"/>); insertion → sticky note at the
-/// insertion point (a caret, in Acrobat — PDFium cannot create carets yet); move → strikeout at the
-/// source plus a note at the destination; run-formatting change → underline describing it.
+/// comment with no range → sticky note; deletion → strikeout; deletion + insertion → Acrobat's
+/// "Replace Text", a caret with the new text and a strikeout grouped to it (/IRT, /RT /Group);
+/// insertion → Acrobat's "Inserted Text", a caret at the insertion point carrying the text; move →
+/// strikeout at the source plus a caret at the destination; run-formatting change → underline
+/// describing it. Carets need RailReader.Core ≥ 0.81, which creates them through its post-pass.
 /// A range over a page break follows <see cref="ContinuationMarkup"/>.
 /// </remarks>
 internal static class DocxAnnotationBuilder
@@ -123,7 +124,7 @@ internal static class DocxAnnotationBuilder
                     pieces = null;
                     point ??= s;
                     if (item.Kind != DocxItemKind.Comment)
-                        warning = "the range is empty in the rendered original; written as a note";
+                        warning = "the range is empty in the rendered original; written at its point";
                 }
             }
             else if (item.StartMark is not null && point is null)
@@ -138,16 +139,29 @@ internal static class DocxAnnotationBuilder
 
             if (pieces is not null && item.Kind is not (DocxItemKind.Insertion or DocxItemKind.MoveTo))
             {
+                // A replacement is Acrobat's "Replace Text": a caret carrying the new text at the end
+                // of the old, and a strikeout over the old grouped to it (/IRT + /RT /Group).
+                bool replace = item.Kind == DocxItemKind.Replacement;
                 var (type, color, contents, subject) = item.Kind switch
                 {
                     DocxItemKind.Comment => (MarkupType.Highlight, Yellow, item.Text, (string?)null),
                     DocxItemKind.Deletion => (MarkupType.Strikeout, Red, null, "Deleted Text"),
                     DocxItemKind.MoveFrom => (MarkupType.Strikeout, Red, "Moved elsewhere", "Moved Text"),
-                    DocxItemKind.Replacement => (MarkupType.Replace, Blue,
-                        ReplacementMarkup.FormatContents(item.Text.Trim(), null), ReplacementMarkup.Subject),
+                    DocxItemKind.Replacement => (MarkupType.Strikeout, Blue, (string?)null, (string?)null),
                     DocxItemKind.Formatting => (MarkupType.Underline, Green, item.Text, "Formatting"),
                     _ => throw new InvalidOperationException(item.Kind.ToString()),
                 };
+                string headId = $"docx-{kind}-{item.Id}-{idTag}";
+                CaretAnnotation? caret = null;
+                if (replace)
+                {
+                    caret = CaretAt(end!.Value, pages.Text(end.Value.Page));
+                    Stamp(caret, item, color);
+                    caret.Contents = item.Text.Trim();
+                    caret.Subject = "Replace Text";
+                    caret.NativeId = headId;
+                    headId += "-strike";
+                }
 
                 var built = new List<(int Page, TextMarkupAnnotation Annotation)>();
                 for (int i = 0; i < pieces.Count; i++)
@@ -158,15 +172,19 @@ internal static class DocxAnnotationBuilder
                         rects = WithinBody(rects, margins, pages.Size(page).Height);
                     if (rects.Count == 0) continue;
 
-                    var pieceType = built.Count > 0 && type == MarkupType.Replace ? MarkupType.Strikeout : type;
-                    var markup = MarkupPlanService.BuildTextMarkup(pieceType, rects);
+                    var markup = MarkupPlanService.BuildTextMarkup(type, rects);
                     Stamp(markup, item, color);
                     markup.Opacity = type == MarkupType.Highlight ? MarkupPlanService.DefaultHighlightOpacity : 1f;
                     if (built.Count == 0)
                     {
                         markup.Contents = contents;
                         markup.Subject = subject;
-                        markup.NativeId = $"docx-{kind}-{item.Id}-{idTag}";
+                        markup.NativeId = headId;
+                        if (caret is not null)
+                        {
+                            markup.InReplyTo = caret.NativeId;
+                            markup.ReplyType = AnnotationReplyType.Group;
+                        }
                     }
                     else
                     {
@@ -181,25 +199,36 @@ internal static class DocxAnnotationBuilder
                     results.Add(Fail("the range has no measurable text in the PDF"));
                     continue;
                 }
+                if (caret is not null) On(end!.Value.Page).Add(caret);
                 foreach (var (page, markup) in built) On(page).Add(markup);
                 head = built[0].Annotation;
                 headPage = built[0].Page;
                 if (built[^1].Page != headPage) endPage = built[^1].Page + 1;
                 if (built.Count > 2) warning = $"runs over {built.Count} pages";
-                written = type switch
+                written = replace ? "replacement" : type switch
                 {
-                    MarkupType.Highlight => "highlight", MarkupType.Replace => "replacement",
-                    MarkupType.Underline => "underline", _ => "strikeout",
+                    MarkupType.Highlight => "highlight", MarkupType.Underline => "underline", _ => "strikeout",
                 };
+            }
+            else if (point is { } c && item.Kind is DocxItemKind.Insertion or DocxItemKind.MoveTo or DocxItemKind.Replacement)
+            {
+                // Acrobat's "Inserted Text": a caret at the insertion point carrying the text. A
+                // replacement whose old text is not on the page is, in effect, an insertion.
+                var caret = CaretAt(c, pages.Text(c.Page));
+                Stamp(caret, item, Blue);
+                caret.Contents = item.Text.Trim();
+                caret.Subject = item.Kind == DocxItemKind.MoveTo ? "Moved Text" : "Inserted Text";
+                caret.NativeId = $"docx-{kind}-{item.Id}-{idTag}";
+                On(c.Page).Add(caret);
+                head = caret;
+                headPage = c.Page;
+                written = "caret";
             }
             else if (point is { } p)
             {
                 var (text, subject, color) = item.Kind switch
                 {
                     DocxItemKind.Comment => (item.Text, (string?)null, Yellow),
-                    DocxItemKind.Insertion => ($"Insert: “{item.Text.Trim()}”", "Inserted Text", Blue),
-                    DocxItemKind.MoveTo => ($"Moved here: “{item.Text.Trim()}”", "Moved Text", Blue),
-                    DocxItemKind.Replacement => ($"Replace with: “{item.Text.Trim()}”", "Inserted Text", Blue),
                     DocxItemKind.Deletion or DocxItemKind.MoveFrom => ($"Deleted: “{item.Text.Trim()}”", "Deleted Text", Red),
                     _ => (item.Text, "Formatting", Green),
                 };
@@ -251,6 +280,42 @@ internal static class DocxAnnotationBuilder
         annotation.CreatedUtc = item.Date;
         annotation.ModifiedUtc = item.Date;
         annotation.Source = AnnotationSource.RailReader;
+    }
+
+    /// <summary>
+    /// A caret at an anchor's insertion point, sized to its line: half a line high, sitting on the
+    /// baseline and reaching a little below it, centred on the boundary between two characters.
+    /// </summary>
+    private static CaretAnnotation CaretAt(Anchor at, PageText page)
+    {
+        float x = at.Boundary <= at.Line.Index ? at.Line.Left : at.Line.Right;
+        var (top, bottom) = LineBand(page, at.Line);
+        var (cx, cy, w, h) = CaretBox(x, top, bottom);
+        return new CaretAnnotation { X = cx, Y = cy, W = w, H = h };
+    }
+
+    /// <summary>Caret geometry (top-left, size) for an insertion point at <paramref name="x"/> on a line spanning top..bottom.</summary>
+    internal static (float X, float Y, float W, float H) CaretBox(float x, float lineTop, float lineBottom)
+    {
+        float lineHeight = MathF.Max(lineBottom - lineTop, 1f);
+        float h = MathF.Max(lineHeight * 0.5f, 3f), w = h * 0.9f;
+        float baseline = lineBottom - lineHeight * 0.2f;   // glyph boxes reach down to the descenders
+        return (x - w / 2f, baseline - h * 0.6f, w, h);
+    }
+
+    /// <summary>The vertical extent of the line <paramref name="seed"/> is on: every glyph overlapping it by half.</summary>
+    private static (float Top, float Bottom) LineBand(PageText page, CharBox seed)
+    {
+        float top = seed.Top, bottom = seed.Bottom;
+        foreach (var b in page.CharBoxes)
+        {
+            if (b.Right <= b.Left || b.Bottom <= b.Top) continue;
+            float overlap = MathF.Min(b.Bottom, seed.Bottom) - MathF.Max(b.Top, seed.Top);
+            if (overlap < 0.5f * MathF.Min(b.Bottom - b.Top, seed.Bottom - seed.Top)) continue;
+            top = MathF.Min(top, b.Top);
+            bottom = MathF.Max(bottom, b.Bottom);
+        }
+        return (top, bottom);
     }
 
     /// <summary>

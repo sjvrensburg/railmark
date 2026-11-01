@@ -298,6 +298,18 @@ public class DocxImportTests : IDisposable
         => Assert.Null(DocxAnnotationBuilder.BoundaryAt(new PageText("", []), 100, 100));
 
     [Fact]
+    public void A_Caret_Sits_On_The_Baseline_Centred_On_The_Insertion_Point()
+    {
+        // A line whose glyph boxes span 100..120 (descenders included): baseline ≈ 116.
+        var (x, y, w, h) = DocxAnnotationBuilder.CaretBox(200, 100, 120);
+
+        Assert.Equal(10, h, 0.01f);                  // half a line
+        Assert.Equal(200, x + w / 2, 0.01f);          // centred on the boundary
+        Assert.True(y < 116 && y + h > 116);          // straddles the baseline
+        Assert.True(y + h <= 120.5f);                 // and stays within the line
+    }
+
+    [Fact]
     public void WithinBody_Drops_Header_And_Footer_Lines_Whatever_Their_Text_Order()
     {
         RectF L(float top) => new(72, top, 500, top + 10);
