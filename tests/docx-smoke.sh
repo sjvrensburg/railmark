@@ -117,9 +117,7 @@ expect "Word's dates survive" \
 if [ "$failures" -gt 0 ]; then
     # Enough to diagnose without the PDF: every record, quotes shortened, plus the placement report.
     echo "--- read-back records:" >&2
-    jq -c '.annotations[] | del(.color, .opacity, .date, .created, .modified)
-        | if .quote then .quote |= (if length > 90 then .[:40] + " … " + .[-40:] else . end) else . end' \
-        "$WORK/annotations.json" >&2
+    jq -c '.annotations[] | del(.color, .opacity, .date, .created, .modified)' "$WORK/annotations.json" >&2
     echo "--- placement report:" >&2
     jq -c '.[]' "$WORK/report.json" >&2
     echo "${failures} check(s) failed." >&2
