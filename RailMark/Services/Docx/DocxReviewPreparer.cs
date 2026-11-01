@@ -77,6 +77,7 @@ internal static class DocxReviewPreparer
                 XDocument xml;
                 using (var from = entry.Open()) xml = XDocument.Load(from, LoadOptions.PreserveWhitespace);
                 state.Part = match.Groups[1].Value.ToLowerInvariant();
+                if (state.Part == "document") review.BodyMargins = ReadBodyMargins(xml);
                 Rewrite(xml, state, comments);
                 using var stream = target.CreateEntry(entry.FullName, CompressionLevel.Optimal).Open();
                 xml.Save(stream, SaveOptions.DisableFormatting);
@@ -446,6 +447,21 @@ internal static class DocxReviewPreparer
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>Smallest top and bottom page margin over every section, in points (twips / 20).</summary>
+    internal static (float Top, float Bottom)? ReadBodyMargins(XDocument document)
+    {
+        float? top = null, bottom = null;
+        foreach (var mar in document.Descendants(W + "sectPr").Select(s => s.Element(W + "pgMar")).OfType<XElement>())
+        {
+            // A negative top/bottom margin is "exactly this, even over the header" — the distance still applies.
+            if (int.TryParse((string?)mar.Attribute(W + "top"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var t))
+                top = MathF.Min(top ?? float.MaxValue, Math.Abs(t) / 20f);
+            if (int.TryParse((string?)mar.Attribute(W + "bottom"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var b))
+                bottom = MathF.Min(bottom ?? float.MaxValue, Math.Abs(b) / 20f);
+        }
+        return top is { } tt && bottom is { } bb ? (tt, bb) : null;
+    }
 
     internal static string TextOf(XElement el)
     {

@@ -66,6 +66,13 @@ internal sealed class DocxReview
     /// <summary>Prefix of every bookmark the preparer added, unique to this run.</summary>
     public required string MarkPrefix { get; init; }
 
+    /// <summary>
+    /// The page margins the body text is laid out between, in points: the smallest top and bottom
+    /// margin of any section (<c>w:pgMar</c>). Headers and footers sit in these margins, so a box
+    /// centred outside them is not body text. Null when the document declares no section properties.
+    /// </summary>
+    public (float Top, float Bottom)? BodyMargins { get; set; }
+
     /// <summary>Revisions the prototype leaves as they are in the rendered original (counted by kind).</summary>
     public Dictionary<string, int> Unsupported { get; } = new(StringComparer.Ordinal);
 

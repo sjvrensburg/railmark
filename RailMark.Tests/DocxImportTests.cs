@@ -288,14 +288,25 @@ public class DocxImportTests : IDisposable
         => Assert.Null(DocxAnnotationBuilder.BoundaryAt(new PageText("", []), 100, 100));
 
     [Fact]
-    public void TrimRunningText_Drops_A_Footer_After_The_Body_And_A_Header_Before_It()
+    public void WithinBody_Drops_Header_And_Footer_Lines_Whatever_Their_Text_Order()
     {
         RectF L(float top) => new(72, top, 500, top + 10);
-        var head = new List<RectF> { L(600), L(613), L(626), L(740) };   // last body lines, then the footer
-        var tail = new List<RectF> { L(40), L(80), L(93) };              // header, then the first body lines
+        // LibreOffice 26.2 writes the header and footer BEFORE the body: no gap rule over text
+        // order can drop them, but they sit in the margins (here 72pt top and bottom on 792pt).
+        var tail = new List<RectF> { L(36), L(744), L(75), L(87) };
 
-        Assert.Equal(3, DocxAnnotationBuilder.TrimRunningText(head, trimEnd: true, trimStart: false).Count);
-        var trimmedTail = DocxAnnotationBuilder.TrimRunningText(tail, trimEnd: false, trimStart: true);
-        Assert.Equal([L(80), L(93)], trimmedTail);
+        Assert.Equal([L(75), L(87)], DocxAnnotationBuilder.WithinBody(tail, (72f, 72f), 792));
+    }
+
+    [Fact]
+    public void Body_Margins_Are_The_Smallest_Over_All_Sections_In_Points()
+    {
+        var doc = XDocument.Parse(
+            $"<w:document {Ns}><w:body>"
+            + "<w:p><w:pPr><w:sectPr><w:pgMar w:top=\"1440\" w:bottom=\"2160\"/></w:sectPr></w:pPr></w:p>"
+            + "<w:sectPr><w:pgMar w:top=\"-1080\" w:bottom=\"1440\"/></w:sectPr></w:body></w:document>");
+
+        Assert.Equal((54f, 72f), DocxReviewPreparer.ReadBodyMargins(doc));
+        Assert.Null(DocxReviewPreparer.ReadBodyMargins(XDocument.Parse($"<w:document {Ns}><w:body/></w:document>")));
     }
 }

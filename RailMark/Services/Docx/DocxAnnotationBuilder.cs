@@ -45,9 +45,6 @@ internal static class DocxAnnotationBuilder
     private static string Red => Palette[2];
     private static string Blue => Palette[3];
 
-    /// <summary>A gap this many line heights wide, at a piece's edge, separates body text from a running header/footer.</summary>
-    private const float RunningTextGap = 2.5f;
-
     private readonly record struct Anchor(int Page, int Boundary, CharBox Line);
 
     private sealed class Pages(IPdfService pdf, IPdfTextService text)
@@ -157,8 +154,8 @@ internal static class DocxAnnotationBuilder
                 {
                     var (page, from, length) = pieces[i];
                     var rects = pages.Rects(page, from, length);
-                    if (pieces.Count > 1)
-                        rects = TrimRunningText(rects, trimEnd: i < pieces.Count - 1, trimStart: i > 0);
+                    if (review.BodyMargins is { } margins && !item.Part.StartsWith("header") && !item.Part.StartsWith("footer"))
+                        rects = WithinBody(rects, margins, pages.Size(page).Height);
                     if (rects.Count == 0) continue;
 
                     var pieceType = built.Count > 0 && type == MarkupType.Replace ? MarkupType.Strikeout : type;
@@ -277,22 +274,16 @@ internal static class DocxAnnotationBuilder
     }
 
     /// <summary>
-    /// Drops the lines past a wide vertical gap at the end (a footer or footnotes after the body) or
-    /// before one at the start (a running header) of a piece that runs to or from a page break.
+    /// Keeps the rects centred between the page's top and bottom margins. A range that runs to or
+    /// from a page break covers the page's text up to its edge, and the running header and footer
+    /// are part of that text — at the end of it (LibreOffice 24.2) or before the body (26.2), so no
+    /// rule based on text order or on gaps can find them. Their place on the page can: Word sets
+    /// headers and footers in the margins, and body text never enters them.
     /// </summary>
-    internal static List<RectF> TrimRunningText(List<RectF> rects, bool trimEnd, bool trimStart)
+    internal static List<RectF> WithinBody(List<RectF> rects, (float Top, float Bottom) margins, double pageHeight)
     {
-        static bool Gap(RectF above, RectF below)
-            => below.Top - above.Bottom > RunningTextGap * MathF.Max(above.Bottom - above.Top, below.Bottom - below.Top);
-
-        int first = 0, last = rects.Count - 1;
-        if (trimEnd)
-            for (int i = 1; i <= last; i++)
-                if (Gap(rects[i - 1], rects[i])) { last = i - 1; break; }
-        if (trimStart)
-            for (int i = last; i > first; i--)
-                if (Gap(rects[i - 1], rects[i])) { first = i; break; }
-        return rects.GetRange(first, last - first + 1);
+        float top = margins.Top, bottom = (float)pageHeight - margins.Bottom;
+        return rects.Where(r => (r.Top + r.Bottom) / 2f is var mid && mid >= top && mid <= bottom).ToList();
     }
 
     /// <summary>
