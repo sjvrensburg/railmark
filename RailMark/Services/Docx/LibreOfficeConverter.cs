@@ -47,6 +47,23 @@ internal static class LibreOfficeConverter
         return wellKnown.FirstOrDefault(File.Exists);
     }
 
+    /// <summary>
+    /// <c>LD_LIBRARY_PATH</c> for the child with railmark's own bundle directory taken out. The
+    /// AppImage and tarball launchers put the bundled native libraries (pdfium, Skia, ONNX Runtime,
+    /// the .NET host) first on the path so railmark finds them; soffice must not resolve its own
+    /// dependencies against them. Null when nothing is left.
+    /// </summary>
+    internal static string? WithoutOwnBundle(string? value, string bundleDir)
+    {
+        if (string.IsNullOrEmpty(value)) return null;
+        static string Norm(string p) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p));
+        var own = Norm(bundleDir);
+        var kept = value.Split(Path.PathSeparator)
+            .Where(e => e.Length > 0 && !string.Equals(Norm(e), own, StringComparison.Ordinal))
+            .ToList();
+        return kept.Count == 0 ? null : string.Join(Path.PathSeparator, kept);
+    }
+
     /// <summary>Converts <paramref name="docxPath"/> to <paramref name="pdfPath"/>; throws with LibreOffice's output on failure.</summary>
     public static void Convert(string soffice, string docxPath, string pdfPath, TimeSpan timeout)
     {
@@ -70,6 +87,9 @@ internal static class LibreOfficeConverter
                          Path.GetFullPath(docxPath),
                      })
                 psi.ArgumentList.Add(a);
+            var libraryPath = WithoutOwnBundle(Environment.GetEnvironmentVariable("LD_LIBRARY_PATH"), AppContext.BaseDirectory);
+            if (libraryPath is null) psi.Environment.Remove("LD_LIBRARY_PATH");
+            else psi.Environment["LD_LIBRARY_PATH"] = libraryPath;
 
             using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start {soffice}.");
             var stdout = process.StandardOutput.ReadToEndAsync();
