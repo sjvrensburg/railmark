@@ -48,7 +48,16 @@ jobs:
       - name: Integration checks for --from-docx
         env:
           RAILMARK_REQUIRE_SOFFICE: '1'
+          RAILMARK_SMOKE_OUT: ${{ runner.temp }}/docx-smoke
         run: ./tests/docx-smoke.sh dotnet run --project RailMark/ -c Release --
+
+      - name: Upload docx-smoke outputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docx-smoke-outputs
+          path: ${{ runner.temp }}/docx-smoke
+          if-no-files-found: ignore
 
   # Windows packaging is the least-exercised path, so prove it still compiles on
   # every change rather than discovering it is broken while cutting a release.

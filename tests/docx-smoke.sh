@@ -29,7 +29,15 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# RAILMARK_SMOKE_OUT=<dir> keeps the generated .docx, the PDF and both JSON files (CI uploads them on failure).
+keep_outputs() {
+    if [ -n "${RAILMARK_SMOKE_OUT:-}" ]; then
+        mkdir -p "$RAILMARK_SMOKE_OUT"
+        cp "$WORK"/review.docx "$WORK"/review.pdf "$WORK"/report.json "$WORK"/annotations.json "$RAILMARK_SMOKE_OUT"/ 2>/dev/null || true
+    fi
+    rm -rf "$WORK"
+}
+trap keep_outputs EXIT
 RAILMARK=("$@")
 failures=0
 
