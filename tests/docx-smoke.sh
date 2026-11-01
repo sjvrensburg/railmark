@@ -8,7 +8,8 @@
 #   ./tests/docx-smoke.sh dotnet run --project RailMark/ --
 #
 # Needs LibreOffice (soffice on PATH, or RAILMARK_SOFFICE), python3 and jq. Without LibreOffice
-# it reports SKIP and exits 0, so it can sit in CI before the runners have it.
+# it reports SKIP and exits 0 — unless RAILMARK_REQUIRE_SOFFICE is set (CI sets it), in which
+# case a missing LibreOffice is a failure, so the checks can't silently stop running.
 
 set -euo pipefail
 
@@ -18,6 +19,10 @@ if [ $# -eq 0 ]; then
 fi
 
 if [ -z "${RAILMARK_SOFFICE:-}" ] && ! command -v soffice >/dev/null && ! command -v libreoffice >/dev/null; then
+    if [ -n "${RAILMARK_REQUIRE_SOFFICE:-}" ]; then
+        echo "FAIL docx-smoke: LibreOffice (soffice) not found and RAILMARK_REQUIRE_SOFFICE is set" >&2
+        exit 1
+    fi
     echo "SKIP docx-smoke: LibreOffice (soffice) not found"
     exit 0
 fi
@@ -59,9 +64,18 @@ else
     failures=$((failures + 1))
 fi
 
+if [ ! -s "$WORK/review.pdf" ]; then
+    echo "  FAIL no PDF was written; stopping" >&2
+    exit 1
+fi
+
 # Read back with a throw-away HOME so no RailReader2 sidecar or document map is consulted.
 mkdir -p "$WORK/home"
 HOME="$WORK/home" "${RAILMARK[@]}" "$WORK/review.pdf" --format json -o "$WORK/annotations.json" 2>/dev/null
+if ! jq -e '.annotations' "$WORK/annotations.json" >/dev/null 2>&1; then
+    echo "  FAIL reading the annotations back produced no JSON; stopping" >&2
+    exit 1
+fi
 
 echo "== read back"
 A='.annotations[]'

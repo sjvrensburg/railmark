@@ -307,7 +307,7 @@ rather than re-deriving the schema from scratch each time.
 ```bash
 dotnet test                                            # unit tests
 ./tests/integration-smoke.sh dotnet run --project RailMark/ --
-./tests/docx-smoke.sh dotnet run --project RailMark/ --  # --from-docx; needs LibreOffice, else SKIP
+./tests/docx-smoke.sh dotnet run --project RailMark/ --  # --from-docx; needs LibreOffice, else SKIP (CI installs it)
 ```
 
 The integration script drives a real build against `tests/fixtures/sample.pdf` — a small,
