@@ -173,14 +173,19 @@ public class MarkdownBuilder
             for (int i = 0; i < annotations.Count; i++)
                 position.TryAdd(annotations[i], (pageIdx, i));
 
+        // A replacement renders as its caret, so a reply to its strikeout goes under the caret.
+        var strikeToCaret = _caretReplacements
+            .Where(kv => kv.Key.NativeId is not null && byId.ContainsKey(kv.Key.NativeId))
+            .ToDictionary(kv => kv.Value, kv => byId[kv.Key.NativeId!]);
+
         var replies = new List<((int page, int annotIdx) reply, (int page, int annotIdx) parent)>();
         foreach (var thread in AnnotationThreads.Build(_annotations))
         {
             foreach (var note in thread.Replies.OfType<TextNoteAnnotation>())
             {
-                if (note.InReplyTo is not { } parentId
-                    || !byId.TryGetValue(parentId, out var parent)
-                    || _groupChildren.Contains(parent)) continue;
+                if (note.InReplyTo is not { } parentId || !byId.TryGetValue(parentId, out var parent)) continue;
+                if (strikeToCaret.TryGetValue(parent, out var caret)) parent = caret;
+                if (_groupChildren.Contains(parent)) continue;
                 replies.Add((position[note], parent));
             }
         }
@@ -329,11 +334,9 @@ public class MarkdownBuilder
             var pageText = _continuations.ContainsKey((page, annotIdx)) ? null : _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
-                // The context is page text emitted verbatim, so it still carries the extractor's
-                // invisible de-hyphenation markers. Strip them after the offsets have been used.
-                var bolded = TextLocator.StripInvisibleMarkers(
-                    BoldHighlightInContext(page, annotIdx, pageText, highlightedText));
-                sb.AppendLine($"> {bolded}");
+                // The sentence around the highlight, on one line (SentenceAround also drops the
+                // extractor's invisible de-hyphenation markers).
+                sb.AppendLine($"> {BoldHighlightInContext(page, annotIdx, pageText, highlightedText)}");
             }
             else
             {
@@ -454,8 +457,18 @@ public class MarkdownBuilder
             else
                 sb.AppendLine($"> Replace with **{replacement}**");
 
+            // The strikeout's own /Contents is the reviewer's reason (RailMark's --apply-markup puts
+            // the comment there; Acrobat leaves it empty).
+            var reason = _annotations.Pages[child.page][child.annotIdx].Contents;
+            if (!string.IsNullOrWhiteSpace(reason) && !IsEchoOfMarkedText(reason, struckText)
+                && CleanText(reason) != replacement)
+            {
+                sb.AppendLine(">");
+                sb.AppendLine($"> **Comment:** {reason}");
+            }
+
             sb.AppendLine(">");
-            sb.AppendLine($"> {GetLabel(page, "suggested replacement")}");
+            sb.AppendLine($"> *({PageSpan(child.page, child.annotIdx)}, suggested replacement)*");
             sb.AppendLine();
             return;
         }
@@ -526,10 +539,7 @@ public class MarkdownBuilder
             var match = _markupOffsets != null && _markupOffsets.TryGetValue((page, annotIdx), out var offset)
                 ? matches.MinBy(m => Math.Abs(m.CharStart - offset))
                 : matches[0];
-            var end = match.CharStart + match.CharLength;
-            return pageText[..match.CharStart]
-                + "**" + pageText[match.CharStart..end] + "**"
-                + pageText[end..];
+            return TextLocator.SentenceAround(pageText, match.CharStart, match.CharStart + match.CharLength);
         }
 
         // Fall back to just the highlighted text bolded

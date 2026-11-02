@@ -21,7 +21,7 @@ public class DocxImportTests : IDisposable
     private static string R(string text, string rPr = "") => $"<w:r>{rPr}<w:t xml:space=\"preserve\">{text}</w:t></w:r>";
     private static string P(params string[] content) => $"<w:p>{string.Concat(content)}</w:p>";
 
-    private string MakeDocx(string body, string? comments = null, string? commentsExtended = null)
+    private string MakeDocx(string body, string? comments = null, string? commentsExtended = null, string? footnotes = null)
     {
         var path = Path.Combine(_dir.FullName, $"{Guid.NewGuid():N}.docx");
         using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
@@ -35,17 +35,28 @@ public class DocxImportTests : IDisposable
             Add("word/comments.xml", $"<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:comments {Ns}>{comments}</w:comments>");
         if (commentsExtended != null)
             Add("word/commentsExtended.xml", $"<?xml version=\"1.0\" encoding=\"UTF-8\"?><w15:commentsEx {Ns}>{commentsExtended}</w15:commentsEx>");
+        if (footnotes != null)
+            Add("word/footnotes.xml", $"<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:footnotes {Ns}>{footnotes}</w:footnotes>");
         return path;
     }
 
-    private (DocxReview Review, XDocument Document) Prepare(string docx)
+    private (DocxReview Review, XDocument Document) Prepare(string docx, string part = "word/document.xml")
     {
         var output = Path.Combine(_dir.FullName, $"{Guid.NewGuid():N}-base.docx");
         var review = DocxReviewPreparer.Prepare(docx, output);
         using var zip = ZipFile.OpenRead(output);
-        using var s = zip.GetEntry("word/document.xml")!.Open();
+        using var s = zip.GetEntry(part)!.Open();
         return (review, XDocument.Load(s, LoadOptions.PreserveWhitespace));
     }
+
+    private static string Ins(int id, string author, string text) => $"<w:ins w:id=\"{id}\" w:author=\"{author}\" {Date}>{R(text)}</w:ins>";
+    private static string Del(int id, string author, string text)
+        => $"<w:del w:id=\"{id}\" w:author=\"{author}\" {Date}><w:r><w:delText>{text}</w:delText></w:r></w:del>";
+    private static string Row(string a, string b, string trPr = "") => $"<w:tr>{trPr}<w:tc>{P(a)}</w:tc><w:tc>{P(b)}</w:tc></w:tr>";
+    private static string RowMark(string kind, int id, string author) => $"<w:trPr><w:{kind} w:id=\"{id}\" w:author=\"{author}\" {Date}/></w:trPr>";
+
+    private static bool HasMark(XElement el, string? name)
+        => el.Elements(W + "bookmarkStart").Any(b => (string?)b.Attribute(W + "name") == name);
 
     private static string BodyText(XDocument doc) => string.Concat(doc.Descendants(W + "t").Select(t => t.Value));
 
@@ -238,6 +249,198 @@ public class DocxImportTests : IDisposable
 
         Assert.Equal("A B", BodyText(doc));
         Assert.Equal(DocxItemKind.Insertion, Assert.Single(review.Items).Kind);
+    }
+
+    [Fact]
+    public void An_Inserted_Table_Row_Is_Removed_And_Is_One_Insertion_At_The_Next_Row()
+    {
+        var docx = MakeDocx("<w:tbl>"
+            + Row(R("Keep A1"), R("Keep B1"))
+            + Row(Ins(2, "Rob", "New A"), Ins(3, "Rob", "New B"), RowMark("ins", 1, "Rob"))
+            + Row(R("Keep A3"), R("Keep B3")) + "</w:tbl>" + P(R("After.")));
+
+        var (review, doc) = Prepare(docx);
+
+        var item = Assert.Single(review.Items);
+        Assert.Equal(DocxItemKind.Insertion, item.Kind);
+        Assert.Equal("Rob", item.Author);
+        Assert.Equal("Inserted table row: New A | New B", item.Text);
+        var rows = doc.Descendants(W + "tr").ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.DoesNotContain("New", BodyText(doc));
+        // The insertion point is the start of the row that now follows it.
+        Assert.True(HasMark(rows[1].Descendants(W + "p").First(), item.PointMark));
+    }
+
+    [Fact]
+    public void A_Table_Whose_Every_Row_Was_Inserted_Is_Removed_Whole()
+    {
+        var docx = MakeDocx(P(R("Before."))
+            + "<w:tbl>" + Row(Ins(2, "Tia", "T1"), Ins(3, "Tia", "T2"), RowMark("ins", 1, "Tia"))
+            + Row(Ins(5, "Tia", "T3"), Ins(6, "Tia", "T4"), RowMark("ins", 4, "Tia")) + "</w:tbl>"
+            + P(R("After.")));
+
+        var (review, doc) = Prepare(docx);
+
+        var item = Assert.Single(review.Items);
+        Assert.Equal("Inserted table:\nT1 | T2\nT3 | T4", item.Text);
+        Assert.Empty(doc.Descendants(W + "tbl"));
+        Assert.True(HasMark(doc.Descendants(W + "p").Last(), item.PointMark));
+    }
+
+    [Fact]
+    public void A_Deleted_Table_Row_Stays_And_Only_Its_Text_Is_Struck()
+    {
+        var docx = MakeDocx("<w:tbl>"
+            + Row(R("Keep A1"), R("Keep B1"))
+            + Row(Del(2, "Rob", "Old A"), Del(3, "Rob", "Old B"), RowMark("del", 1, "Rob")) + "</w:tbl>" + P(R("After.")));
+
+        var (review, doc) = Prepare(docx);
+
+        // Two deletions — the row marker itself is not one (it used to be: an empty, unplaceable item).
+        Assert.Equal([DocxItemKind.Deletion, DocxItemKind.Deletion], review.Items.Select(i => i.Kind));
+        Assert.Equal(["Old A", "Old B"], review.Items.Select(i => i.Text));
+        Assert.Equal(2, doc.Descendants(W + "tr").Count());
+        Assert.Empty(doc.Descendants(W + "trPr").Elements());
+    }
+
+    [Fact]
+    public void A_Paragraph_Property_Change_Restores_The_Original_And_Merges_Neighbours()
+    {
+        string Centred(string text) => $"<w:p><w:pPr><w:jc w:val=\"center\"/><w:rPr><w:b/></w:rPr>"
+            + $"<w:pPrChange w:id=\"1\" w:author=\"Pat\" {Date}><w:pPr><w:ind w:left=\"720\"/></w:pPr></w:pPrChange></w:pPr>{R(text)}</w:p>";
+        var docx = MakeDocx(Centred("One.") + Centred("Two.") + P(R("Three.")));
+
+        var (review, doc) = Prepare(docx);
+
+        var item = Assert.Single(review.Items);
+        Assert.Equal(DocxItemKind.Formatting, item.Kind);
+        Assert.Equal("Paragraph formatted: Alignment, Indentation", item.Text);
+        var paragraphs = doc.Descendants(W + "p").ToList();
+        foreach (var pPr in paragraphs.Take(2).Select(p => p.Element(W + "pPr")!))
+        {
+            Assert.Null(pPr.Element(W + "jc"));
+            Assert.NotNull(pPr.Element(W + "ind"));
+            Assert.NotNull(pPr.Element(W + "rPr")); // the paragraph mark's run properties are kept
+            Assert.Null(pPr.Element(W + "pPrChange"));
+        }
+        // One range over both paragraphs: starting in the first, ending in the second.
+        Assert.True(HasMark(paragraphs[0], item.StartMark));
+        Assert.True(HasMark(paragraphs[1], item.EndMark));
+    }
+
+    [Fact]
+    public void A_Section_Property_Change_Restores_The_Original_Margins_And_Is_Noted_At_Its_Start()
+    {
+        var docx = MakeDocx(P(R("First."))
+            + $"<w:sectPr><w:headerReference w:type=\"default\" w:id=\"rIdH\"/><w:pgMar w:top=\"720\" w:bottom=\"720\"/>"
+            + $"<w:sectPrChange w:id=\"1\" w:author=\"Sam\" {Date}><w:sectPr><w:pgMar w:top=\"1440\" w:bottom=\"1440\"/></w:sectPr></w:sectPrChange></w:sectPr>");
+
+        var (review, doc) = Prepare(docx);
+
+        var item = Assert.Single(review.Items);
+        Assert.Equal("Section formatted: Margins", item.Text);
+        Assert.NotNull(item.PointMark);
+        Assert.True(HasMark(doc.Descendants(W + "p").First(), item.PointMark));
+        var sectPr = doc.Descendants(W + "sectPr").Single();
+        Assert.NotNull(sectPr.Element(W + "headerReference"));
+        Assert.Equal("1440", (string?)sectPr.Element(W + "pgMar")!.Attribute(W + "top"));
+        // The body margins are the restored ones.
+        Assert.Equal((72f, 72f), review.BodyMargins);
+    }
+
+    [Fact]
+    public void Consecutive_Section_Changes_Are_Each_Noted_At_Their_Own_Section()
+    {
+        // Each sectPrChange holds a sectPr of its own; the second section must be found from the
+        // first section's real break, not from the original the first change carried.
+        string Change(string id) =>
+            $"<w:sectPrChange w:id=\"{id}\" w:author=\"Sam\" {Date}><w:sectPr><w:pgMar w:top=\"1440\" w:bottom=\"1440\"/></w:sectPr></w:sectPrChange>";
+        var docx = MakeDocx(
+            P($"<w:pPr><w:sectPr><w:pgMar w:top=\"720\" w:bottom=\"720\"/>{Change("1")}</w:sectPr></w:pPr>", R("First section."))
+            + P(R("Second section."))
+            + $"<w:sectPr><w:pgMar w:top=\"720\" w:bottom=\"720\"/>{Change("2")}</w:sectPr>");
+
+        var (review, doc) = Prepare(docx);
+
+        Assert.Equal(2, review.Items.Count);
+        var paragraphs = doc.Descendants(W + "p").ToList();
+        Assert.True(HasMark(paragraphs[0], review.Items[0].PointMark));
+        Assert.True(HasMark(paragraphs[1], review.Items[1].PointMark));
+        Assert.False(HasMark(paragraphs[0], review.Items[1].PointMark));
+    }
+
+    [Fact]
+    public void Table_Property_Changes_Restore_The_Original_And_Are_One_Note_Per_Table()
+    {
+        var docx = MakeDocx("<w:tbl><w:tblPr><w:tblW w:w=\"5000\"/>"
+            + $"<w:tblPrChange w:id=\"1\" w:author=\"Tom\" {Date}><w:tblPr><w:tblW w:w=\"3000\"/></w:tblPr></w:tblPrChange></w:tblPr>"
+            + $"<w:tblGrid><w:gridCol w:w=\"2500\"/><w:tblGridChange w:id=\"2\"><w:tblGrid><w:gridCol w:w=\"1500\"/></w:tblGrid></w:tblGridChange></w:tblGrid>"
+            + $"<w:tr><w:tc><w:tcPr><w:tcW w:w=\"2500\"/><w:tcPrChange w:id=\"3\" w:author=\"Tom\" {Date}><w:tcPr><w:tcW w:w=\"1500\"/></w:tcPr></w:tcPrChange></w:tcPr>{P(R("Cell"))}</w:tc></w:tr></w:tbl>"
+            + P(R("After.")));
+
+        var (review, doc) = Prepare(docx);
+
+        Assert.Empty(review.Unsupported);
+        // One note: the grid change carries no author (Word writes none) and joins Tom's.
+        var note = Assert.Single(review.Items);
+        Assert.Equal(DocxItemKind.Formatting, note.Kind);
+        Assert.Equal("Tom", note.Author);
+        Assert.Equal("Table formatted: Table properties, Cell properties, Column widths", note.Text);
+        Assert.Equal("3000", (string?)doc.Descendants(W + "tblW").Single().Attribute(W + "w"));
+        Assert.Equal("1500", (string?)doc.Descendants(W + "gridCol").Single().Attribute(W + "w"));
+        Assert.Equal("1500", (string?)doc.Descendants(W + "tcW").Single().Attribute(W + "w"));
+        Assert.DoesNotContain(doc.Descendants(), e => e.Name.LocalName.EndsWith("Change"));
+    }
+
+    [Fact]
+    public void An_Anchor_Ending_A_Footnote_Is_Followed_By_A_Word_Joiner()
+    {
+        var footnotes = $"<w:footnote w:id=\"1\">{P(R("Note text"), Del(5, "Fay", " gone"))}</w:footnote>"
+            + $"<w:footnote w:id=\"2\">{P(R("Plain note."))}</w:footnote>";
+        var docx = MakeDocx(P(R("Body.")), footnotes: footnotes);
+
+        var (review, notes) = Prepare(docx, "word/footnotes.xml");
+
+        var item = Assert.Single(review.Items);
+        Assert.Equal("footnotes", item.Part);
+        var paragraphs = notes.Descendants(W + "p").ToList();
+        // After the end bookmark: a run holding only U+2060, so the bookmark gets a position on export.
+        var last = paragraphs[0].Elements().Last();
+        Assert.Equal("\u2060", last.Element(W + "t")?.Value);
+        Assert.Contains(last.ElementsBeforeSelf(W + "bookmarkStart"), b => (string?)b.Attribute(W + "name") == item.EndMark);
+        // A footnote whose end has no anchor is left alone.
+        Assert.False(paragraphs[1].Value.Contains('\u2060'), "a word joiner was added where no anchor ends the footnote");
+    }
+
+    [Fact]
+    public void A_Picture_Reads_As_Image_In_Revision_Text()
+    {
+        var picture = "<w:r><w:drawing><wp:inline xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\"/></w:drawing></w:r>";
+        var docx = MakeDocx(P(R("See "), $"<w:ins w:id=\"1\" w:author=\"Ivo\" {Date}>{picture}</w:ins>", R(" here.")));
+
+        var (review, _) = Prepare(docx);
+
+        Assert.Equal("[image]", Assert.Single(review.Items).Text);
+    }
+
+    [Fact]
+    public void The_Scrubber_Blanks_Only_The_Anchors_And_Keeps_Every_Offset()
+    {
+        var pdf = System.Text.Encoding.Latin1.GetBytes(
+            "1 0 obj\n<</RRabcdec1s[3 0 R/XYZ 56.7 750.2 0]\n/UserMark[3 0 R/XYZ 1 2 0]\n/RRabcder12e 7 0 R>>\nendobj\n"
+            + "2 0 obj\n<</Names[(RRabcdec2p)[3 0 R/Fit](Other)[3 0 R/Fit]]>>\nendobj\nstartxref 42");
+        var before = pdf.Length;
+
+        int count = NamedDestinationScrubber.Scrub(pdf, "RRabcde");
+
+        var text = System.Text.Encoding.Latin1.GetString(pdf);
+        Assert.Equal(3, count);
+        Assert.Equal(before, pdf.Length);
+        Assert.DoesNotContain("RRabcde", text);
+        Assert.Contains("/UserMark[3 0 R/XYZ 1 2 0]", text);
+        Assert.Contains("(Other)[3 0 R/Fit]", text);
+        Assert.EndsWith("startxref 42", text);
     }
 
     [Fact]

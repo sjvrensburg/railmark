@@ -54,6 +54,11 @@ internal static class DocxImport
             var (file, results) = DocxAnnotationBuilder.Build(
                 review, pdf, factory.CreatePdfTextService(), factory.CreatePdfLinkService());
 
+            // The anchors have been read: take them out of the output.
+            var rendered = File.ReadAllBytes(outputPdf);
+            if (NamedDestinationScrubber.Scrub(rendered, review.MarkPrefix) > 0)
+                File.WriteAllBytes(outputPdf, rendered);
+
             if (file.Pages.Values.Any(l => l.Count > 0))
             {
                 CompositeAnnotationStore.Default.OnSidecarFallback = (path, reason) =>

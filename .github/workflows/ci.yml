@@ -30,6 +30,10 @@ jobs:
           python3 tests/fixtures/make-sample-pdf.py /tmp/regen.pdf
           cmp tests/fixtures/sample.pdf /tmp/regen.pdf
 
+      # The integration checks encrypt a copy of the fixture (AES-128) with qpdf.
+      - name: Install qpdf
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf
+
       # Unit tests fake IPdfService/IPdfTextService, so nothing there exercises
       # real pdfium geometry. This does.
       - name: Integration checks against the fixture PDF

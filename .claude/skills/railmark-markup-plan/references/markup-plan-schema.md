@@ -87,7 +87,9 @@ and freehand — without looking up a quote or recomputing geometry:
   leave it alone; `"comment": ""` clears the comment.
 - The annotation keeps its id, creation date and position. `quote`, `type`, `occurrence` and
   context are ignored; `inReplyTo` and `replacement` are rejected.
-- A `replace` annotation keeps its `Replace with:` text; `comment` changes the comment after it.
+- A `replace` keeps its replacement text; `comment` changes the reason given with it. Either id of
+  the pair (`--format json` reports the strikeout's) updates both: colour and author change on the
+  caret and the strikeout together.
 - `page` must be the page the annotation is on. An unknown id fails the entry; two updates of one
   annotation in a plan conflict, as in "Re-applying a plan".
 - Only annotations that carry an id can be targeted: a PDF annotation with no `/NM` reports
@@ -137,10 +139,17 @@ A longer quote is often the simplest fix: quote enough words that they occur onl
 ## Suggested replacements (`replace`)
 
 `"type": "replace"` with `"replacement": "…"` strikes through the quote and records the text that
-should go in its place — a copy-editor's "change X to Y". It is written as a strikeout whose popup
-reads `Replace with: <replacement>`, followed by your `comment` if any, so it is legible in any PDF
-viewer. `railmark`'s annotation mode reads it back as a single *suggested replacement*
-(`~~old~~ → **new**`).
+should go in its place — a copy-editor's "change X to Y". Since railmark 0.20 it is written as
+Acrobat's *Replace Text*: a caret at the end of the quote carrying the replacement, and a strikeout
+over the quote grouped to it, whose popup holds your `comment` if any. Acrobat and other viewers
+that understand the pair show it as one edit, and removing either half removes both.
+
+A PDF encrypted with RC4 or AES-128 can't hold the caret. There, and with railmark before 0.20, it is
+one strikeout whose popup reads `Replace with: <replacement>`, followed by your `comment`; railmark
+says so on stderr. Re-applying a plan finds a replacement in either form.
+
+`railmark`'s annotation mode reads both back as a single *suggested replacement*
+(`~~old~~ → **new**`), and `--format json` as one `replace` record.
 
 ## Replies
 

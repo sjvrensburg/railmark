@@ -82,8 +82,62 @@ public class MarkdownBuilderTests
         var withOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts, markupOffsets: offsets).Build();
         var withoutOffset = Build(file, [H("Chapter 1", 0)], hlTexts, pageTexts).Build();
 
-        Assert.Contains("> Run the test. Then run **the test** again.", withOffset);
-        Assert.Contains("> Run **the test**. Then run the test again.", withoutOffset);
+        Assert.Contains("> Then run **the test** again.", withOffset);
+        Assert.Contains("> Run **the test**.", withoutOffset);
+    }
+
+    [Fact]
+    public void Highlight_Context_Is_Its_Sentence_Not_The_Page()
+    {
+        // Extracted text: CRLF line breaks, a heading line, a wrap-hyphen marker, other paragraphs.
+        const string text = "Introduction\r\n"
+            + "This document exists so the test suite has a PDF whose exact\r\n"
+            + "contents are known. The model described here is inter\u0002pretable in\r\n"
+            + "practice, which is the point of the exercise. The reviewer called it the\r\n"
+            + "best available option at the time, and nobody disagreed with that.\r\n"
+            + "Methods\r\n"
+            + "Each sample was measured twice and the results were averaged.";
+        var file = MakeFile([(0, [new HighlightAnnotation { Rects = [new(50, 50, 100, 10)] }])]);
+        var hlTexts = new Dictionary<(int, int), string> { [(0, 0)] = "interpretable in practice" };
+
+        var md = Build(file, [H("Chapter 1", 0)], hlTexts, new() { [0] = text }).Build();
+
+        Assert.Contains("> The model described here is **interpretable in practice**, which is the point of the exercise.\n", md.ReplaceLineEndings("\n"));
+        Assert.DoesNotContain("known.", md);
+        Assert.DoesNotContain("reviewer", md);
+        Assert.False(md.Contains('\u0002'), "the de-hyphenation marker leaked");
+    }
+
+    [Theory]
+    // A heading line (short, unpunctuated) ends the sentence before it.
+    [InlineData("Results\nThe first run of the experiment showed a small but consistent effect across\nevery sample we took in the lab.",
+                "small but", "The first run of the experiment showed a **small but** consistent effect across every sample we took in the lab.")]
+    // A closing quote after the full stop still ends the sentence.
+    [InlineData("He said \"stop.\" Then the second sentence starts here.", "second", "Then the **second** sentence starts here.")]
+    // A blank line is a paragraph break.
+    [InlineData("first paragraph without a stop\n\nsecond paragraph holds the word", "holds", "second paragraph **holds** the word")]
+    // A hyphen at a line end keeps the word whole.
+    [InlineData("The COVID-\n19 figures were revised twice.", "figures", "The COVID-19 **figures** were revised twice.")]
+    public void Highlight_Context_Sentence_Boundaries(string text, string quote, string expected)
+    {
+        int start = text.IndexOf(quote, StringComparison.Ordinal);
+        Assert.Equal(expected, TextLocator.SentenceAround(text, start, start + quote.Length));
+    }
+
+    [Fact]
+    public void Highlight_Context_Caps_A_Long_Sentence_At_A_Word()
+    {
+        var words = string.Join(" ", Enumerable.Range(0, 200).Select(i => $"w{i}"));
+        var text = words + " TARGET " + words + ".";
+        int start = text.IndexOf("TARGET", StringComparison.Ordinal);
+
+        var context = TextLocator.SentenceAround(text, start, start + 6);
+
+        Assert.StartsWith("… w", context);
+        Assert.EndsWith(" …", context);
+        Assert.Contains(" **TARGET** ", context);
+        Assert.InRange(context.Length, 300, 2 * TextLocator.MaxContextChars + 20);
+        Assert.DoesNotMatch(@"… \d|\bw\b", context); // no word cut in half
     }
 
     [Fact]
@@ -550,6 +604,28 @@ public class MarkdownBuilderTests
         // The strikeout is folded into the caret, not also emitted on its own.
         Assert.DoesNotContain("suggested deletion", md);
         Assert.Equal(1, CountOccurrences(md, "unnecessarily verbose wording"));
+    }
+
+    [Fact]
+    public void Caret_Replacement_Shows_The_Strikeouts_Comment_And_Threads_Replies_To_It()
+    {
+        // What --apply-markup writes: the caret carries the new text, the strikeout the reason.
+        var caret = new CaretAnnotation { X = 150, Y = 200, W = 5, H = 5, NativeId = "c", Contents = "leaps" };
+        var strike = new StrikeOutAnnotation
+        {
+            Rects = [new(50, 200, 100, 10)], NativeId = "s", InReplyTo = "c",
+            ReplyType = AnnotationReplyType.Group, Contents = "Tense.",
+        };
+        var reply = new TextNoteAnnotation { X = 500, Y = 230, NativeId = "n", InReplyTo = "s", Text = "Agreed." };
+        var file = MakeFile([(0, [strike, caret, reply])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "jumps" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build().ReplaceLineEndings("\n");
+
+        Assert.Contains("> ~~jumps~~ → **leaps**\n>\n> **Comment:** Tense.\n", md);
+        // A reply to the strikeout is threaded under the replacement, which renders as its caret.
+        Assert.Contains("suggested replacement)*\n\n> > **Reply:** Agreed.", md);
+        Assert.Equal(1, CountOccurrences(md, "Agreed."));
     }
 
     [Fact]

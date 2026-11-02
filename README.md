@@ -228,7 +228,9 @@ Beyond the basics:
 - **Page breaks.** A quote may run from the bottom of one page onto the next, past a running
   footer or header.
 - **Suggested replacements.** `"type": "replace"` with a `"replacement"` strikes the quote
-  through and records the text that should replace it.
+  through and records the text that should replace it, as Acrobat's *Replace Text*: a caret
+  carrying the new text, with the strikeout grouped to it. (A PDF encrypted with RC4 or AES-128
+  can't hold a caret; there it is one strikeout reading `Replace with: …`.)
 - **Replies.** `"inReplyTo": "<id>"` (ids come from `--format json`) answers an existing comment;
   a reply note needs no quote.
 - **Re-applying is safe.** Markup already present is reported `unchanged` rather than duplicated,
@@ -262,6 +264,10 @@ text, with the review written as native PDF annotations — the way Acrobat mode
 | Insertion | Acrobat's *Inserted Text*: a caret at the insertion point carrying the text |
 | Move | Strikeout at the source, caret at the destination |
 | Run-formatting change | Underline describing it (`Formatted: Bold`) |
+| Paragraph-formatting change (alignment, indentation, style, bullets and numbering…) | Underline over the paragraph describing it (`Paragraph formatted: Alignment`) |
+| Inserted table row, or whole table | One caret carrying its cells' text (`Inserted table row: A \| B`) |
+| Deleted table row | Strikeout over each cell's text |
+| Table- or section-formatting change | Sticky note at the start of the table or section |
 
 Needs **LibreOffice** (`soffice` on `PATH`, `$RAILMARK_SOFFICE`, or `--soffice <path>`), which
 renders the document; the layout is LibreOffice's, so pagination can differ from Word's. Install the
@@ -271,10 +277,11 @@ changes the layout and can be a font with very tall line boxes. Each
 comment and change is located exactly — railmark plants an invisible bookmark at every anchor
 before rendering and reads the bookmarks back as PDF named destinations — so repeated phrases and
 ranges over a page break land where they belong. Per-item results go to stdout as JSON (exit `2` if
-any item could not be placed). Not yet covered: comments or changes in footnotes, headers and text
-boxes are rendered but may not be placed; table-row insertions/deletions, paragraph-property and
-section changes are rendered as they currently are, unannotated. `--keep-base-docx <path>` saves
-the prepared document for diagnosis.
+any item could not be placed). Comments and changes in headers, footers, footnotes, endnotes and
+text boxes are placed like any other; the anchor bookmarks are removed from the output afterwards.
+Not yet covered: a comment's formatting (it is written as plain text), and numbering changes in
+Word's older `w:numberingChange` form, which are rendered as they currently are. `--keep-base-docx
+<path>` saves the prepared document for diagnosis.
 
 ## Skill for AI agents
 

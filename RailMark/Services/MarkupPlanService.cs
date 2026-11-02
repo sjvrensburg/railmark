@@ -122,6 +122,11 @@ public static class MarkupPlanService
     /// <param name="replaceUnauthored">Remove every existing annotation that has no author.</param>
     /// <param name="defaultOpacity">Opacity for text markup whose entry sets none; see <see cref="MarkupEntry.Opacity"/>.</param>
     /// <param name="removeIds">Remove the annotations with these ids (and the tail of any that continue over a page break).</param>
+    /// <param name="carets">
+    /// Write a <c>replace</c> as Acrobat's Replace Text — a caret carrying the new text, with the
+    /// strikeout over the old grouped to it. False writes RailMark's single tagged strikeout
+    /// (<see cref="ReplacementMarkup"/>) instead, for a PDF the writer can't put a caret in.
+    /// </param>
     public static (AnnotationFile file, MarkupPlanApplyResult result) Resolve(
         MarkupPlan plan,
         IPdfService pdf,
@@ -132,7 +137,8 @@ public static class MarkupPlanService
         string? replaceAuthor = null,
         bool replaceUnauthored = false,
         IReadOnlyCollection<string>? removeIds = null,
-        float? defaultOpacity = null)
+        float? defaultOpacity = null,
+        bool carets = true)
     {
         var file = existing ?? new AnnotationFile();
         var missingIds = new List<string>();
@@ -364,6 +370,13 @@ public static class MarkupPlanService
                 continue;
             }
 
+            // A replacement already written the old way — one tagged strikeout — stays that way.
+            if (entry.Kind == MarkupType.Replace && carets && !HasTaggedTwin(entry, index))
+            {
+                results[index] = ApplyReplace(entry, index, entryPlacements, geometry[index], file, run, defaultOpacity, results[index]!);
+                continue;
+            }
+
             // A note is a single marker, pinned beside where the quote starts; markup covers
             // every part, with the comment carried by the first alone so it isn't repeated.
             var actions = new List<string>();
@@ -432,6 +445,14 @@ public static class MarkupPlanService
             };
         }
 
+        bool HasTaggedTwin(MarkupEntry entry, int index)
+        {
+            var pageIndex = placements[index]![0].PageIndex;
+            var candidate = BuildAnnotation(entry, geometry[index][0], Page(pageIndex).Chars, pdf.GetPageSize(pageIndex), defaultOpacity);
+            if (entry.InReplyTo is { } parentId) MarkAsReply(candidate, parentId);
+            return file.Pages.GetValueOrDefault(pageIndex)?.Any(a => IsSameMarkup(a, candidate, run)) == true;
+        }
+
         var result = new MarkupPlanApplyResult { Removed = removed };
         result.MissingIds.AddRange(missingIds);
         result.Entries.AddRange(results!);
@@ -453,12 +474,16 @@ public static class MarkupPlanService
         var wanted = ids is null ? null : new HashSet<string>(ids, StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var gone = new HashSet<string>(StringComparer.Ordinal);
+        // A group (Acrobat's Replace Text: a caret and the strikeout grouped to it) is one edit, so
+        // removing any member removes its leader, and with it the rest.
+        var leaders = new HashSet<string>(StringComparer.Ordinal);
         foreach (var annotations in file.Pages.Values)
         {
             removed += annotations.RemoveAll(a =>
             {
                 bool hit = Matches(a);
                 if (hit && a.NativeId is { } removedId) gone.Add(removedId);
+                if (hit && a.ReplyType == AnnotationReplyType.Group && a.InReplyTo is { Length: > 0 } leader) leaders.Add(leader);
                 return hit;
             });
         }
@@ -473,8 +498,10 @@ public static class MarkupPlanService
                 {
                     var parent = ReplyMarkup.ParentOf(a);
                     bool follows = (parent is not null && gone.Contains(parent))
-                        || (ContinuationMarkup.HeadOf(a) is { } head && gone.Contains(head));
+                        || (ContinuationMarkup.HeadOf(a) is { } head && gone.Contains(head))
+                        || (a.NativeId is { } own && leaders.Contains(own));
                     if (!follows) return false;
+                    if (a.ReplyType == AnnotationReplyType.Group && a.InReplyTo is { Length: > 0 } leader) leaders.Add(leader);
                     if (a.NativeId is { } id) gone.Add(id);
                     return true;
                 });
@@ -505,76 +532,219 @@ public static class MarkupPlanService
     }
 
     /// <summary>
-    /// Changes the comment, colour and author of an existing annotation where it stands. A
-    /// replacement strikeout keeps its "Replace with:" text and takes the new comment after it.
+    /// Changes the comment, colour and author of an existing annotation where it stands. A tagged
+    /// replacement strikeout keeps its "Replace with:" text and takes the new comment after it. A
+    /// caret replacement may be named by either half: the comment is the strikeout's, and colour,
+    /// author and opacity change on both.
     /// </summary>
     private static MarkupEntryResult ApplyUpdate(
         MarkupEntry entry, Annotation target, AnnotationFile file, int entryIndex, RunState run, MarkupEntryResult result)
     {
+        var caret = target as CaretAnnotation ?? ReplacedBy(file, target);
+        var primary = target is CaretAnnotation c && StrikeOf(file, c) is { } strike ? strike : target;
+        if (ReferenceEquals(primary, caret)) caret = null; // a lone caret: an insertion, updated like anything else
+        var members = new List<Annotation> { primary };
+        if (caret is not null) members.Add(caret);
+
         string? contents = entry.Comment is null ? null
-            : ReplacementMarkup.TryParse(target, out var replacement, out _)
+            : ReplacementMarkup.TryParse(primary, out var replacement, out _)
                 ? ReplacementMarkup.FormatContents(replacement, entry.Comment)
                 : entry.Comment;
         bool changeContents = contents is not null
-            && NormalizeContents(target.EffectiveContents) != NormalizeContents(contents);
+            && NormalizeContents(primary.EffectiveContents) != NormalizeContents(contents);
         bool changeColor = entry.Color is not null
-            && !string.Equals(target.Color, entry.Color, StringComparison.OrdinalIgnoreCase);
+            && members.Any(m => !string.Equals(m.Color, entry.Color, StringComparison.OrdinalIgnoreCase));
         bool changeAuthor = entry.Author is not null
-            && !string.Equals(target.Author, entry.Author, StringComparison.Ordinal);
+            && members.Any(m => !string.Equals(m.Author, entry.Author, StringComparison.Ordinal));
         bool changeOpacity = entry.Opacity is { } opacity
-            && Math.Abs(target.Opacity - opacity) > SameOpacityTolerance;
+            && members.Any(m => Math.Abs(m.Opacity - opacity) > SameOpacityTolerance);
 
-        run.Claimed.Add(target);
+        foreach (var member in members) run.Claimed.Add(member);
         if (!changeContents && !changeColor && !changeAuthor && !changeOpacity)
             return result with { Action = ActionUnchanged };
 
-        if (run.Touched.TryGetValue(target, out var earlier) && earlier != entryIndex)
-            return result with
-            {
-                Success = false,
-                Error = $"Conflicts with entry {earlier + 1} of this plan, which already changed this annotation. "
-                        + "Merge them into one entry.",
-            };
+        foreach (var member in members)
+            if (run.Touched.TryGetValue(member, out var earlier) && earlier != entryIndex)
+                return result with
+                {
+                    Success = false,
+                    Error = $"Conflicts with entry {earlier + 1} of this plan, which already changed this annotation. "
+                            + "Merge them into one entry.",
+                };
 
         if (changeContents)
         {
-            target.Contents = contents;
-            if (target is TextNoteAnnotation note)
+            primary.Contents = contents;
+            if (primary is TextNoteAnnotation note)
                 note.Text = contents!;
         }
-        if (changeColor)
-        {
-            target.Color = entry.Color!;
-            // The reader's faithful colour components would otherwise mask the new hex colour.
-            target.ColorComponents = null;
-        }
-        if (changeAuthor)
-            target.Author = entry.Author;
-        if (changeOpacity)
-            target.Opacity = entry.Opacity!.Value;
 
         // A markup that runs over a page break is two annotations; the tail carries no comment, but
         // it shares the head's colour, author and opacity, and pairing falls back on the author.
-        if ((changeColor || changeAuthor || changeOpacity) && target.NativeId is { } headId)
+        members.AddRange(TailsOf(file, primary));
+        foreach (var member in members)
         {
-            foreach (var tail in file.Pages.Values.SelectMany(a => a)
-                         .Where(a => ContinuationMarkup.Is(a) && ContinuationMarkup.HeadOf(a) == headId))
+            if (changeColor)
             {
-                if (changeColor)
-                {
-                    tail.Color = entry.Color!;
-                    tail.ColorComponents = null;
-                }
-                if (changeAuthor)
-                    tail.Author = entry.Author;
-                if (changeOpacity)
-                    tail.Opacity = entry.Opacity!.Value;
+                member.Color = entry.Color!;
+                // The reader's faithful colour components would otherwise mask the new hex colour.
+                member.ColorComponents = null;
             }
+            if (changeAuthor)
+                member.Author = entry.Author;
+            if (changeOpacity)
+                member.Opacity = entry.Opacity!.Value;
         }
 
-        run.Touched[target] = entryIndex;
+        run.Touched[primary] = entryIndex;
+        if (caret is not null) run.Touched[caret] = entryIndex;
         return result with { Action = ActionUpdated };
     }
+
+    /// <summary>The subject of the caret in a replacement, as Acrobat's Replace Text and <c>--from-docx</c> write it.</summary>
+    internal const string ReplaceTextSubject = "Replace Text";
+
+    /// <summary>
+    /// The caret a strikeout replaces text for, when it is one half of a caret replacement (Acrobat's
+    /// Replace Text): a strikeout whose <c>/IRT</c> names a caret. The same pairing the readers use.
+    /// </summary>
+    internal static CaretAnnotation? ReplacedBy(AnnotationFile file, Annotation annotation)
+        => annotation is StrikeOutAnnotation { InReplyTo: { Length: > 0 } parentId } && !ContinuationMarkup.Is(annotation)
+            ? file.Pages.Values.SelectMany(l => l).OfType<CaretAnnotation>().FirstOrDefault(c => c.NativeId == parentId)
+            : null;
+
+    /// <summary>The strikeout half of the caret replacement <paramref name="caret"/> leads, if it is one.</summary>
+    private static StrikeOutAnnotation? StrikeOf(AnnotationFile file, CaretAnnotation caret)
+        => caret.NativeId is { } id
+            ? file.Pages.OrderBy(p => p.Key).SelectMany(p => p.Value).OfType<StrikeOutAnnotation>()
+                .FirstOrDefault(s => s.InReplyTo == id && !ContinuationMarkup.Is(s))
+            : null;
+
+    /// <summary>A suggested replacement, in either form: a tagged strikeout, or a caret replacement's strikeout.</summary>
+    private static bool IsReplacement(AnnotationFile file, Annotation annotation)
+        => ReplacementMarkup.TryParse(annotation, out _, out _) || ReplacedBy(file, annotation) is not null;
+
+    /// <summary>The parts of a markup over a page break after its head, in page order.</summary>
+    private static List<Annotation> TailsOf(AnnotationFile file, Annotation head)
+        => head.NativeId is { } id
+            ? file.Pages.OrderBy(p => p.Key).SelectMany(p => p.Value)
+                .Where(a => ContinuationMarkup.Is(a) && ContinuationMarkup.HeadOf(a) == id).ToList()
+            : [];
+
+    /// <summary>
+    /// A <c>replace</c> entry as Acrobat's Replace Text: a caret carrying the replacement at the end
+    /// of the old text, and a strikeout over the old text grouped to it (<c>/IRT</c> + <c>/RT /Group</c>),
+    /// which carries the comment. Over a page break the strikeout continues on the next page and the
+    /// caret, at the end of the old text, is there too. An existing replacement by the same author over
+    /// the same words is the same edit: its replacement, comment and colour are brought up to date.
+    /// </summary>
+    private static MarkupEntryResult ApplyReplace(
+        MarkupEntry entry, int entryIndex, List<Placement> placements, List<RectF>[] geometry,
+        AnnotationFile file, RunState run, float? defaultOpacity, MarkupEntryResult located)
+    {
+        var author = entry.Author ?? "AI Reviewer";
+        var color = entry.Color ?? DefaultColors[MarkupType.Replace];
+        var opacity = OpacityFor(entry, defaultOpacity);
+        bool explicitOpacity = OpacityIsExplicit(entry, defaultOpacity);
+        var comment = string.IsNullOrEmpty(entry.Comment) ? null : entry.Comment;
+        var strikes = geometry.Select(rects => BuildTextMarkup(MarkupType.Strikeout, rects)).ToList();
+        int headPage = placements[0].PageIndex;
+        if (!file.Pages.TryGetValue(headPage, out var headList))
+            file.Pages[headPage] = headList = [];
+
+        MarkupEntryResult Done(string action, Annotation? nearDuplicate = null) => located with
+        {
+            Warning = JoinWarnings(located.Warning, nearDuplicate is null ? null : NearDuplicateWarning(nearDuplicate)),
+            SpanCount = geometry.Sum(rects => rects.Count),
+            Action = action,
+        };
+
+        var twin = headList.OfType<StrikeOutAnnotation>()
+            .Select(s => (Strike: s, Caret: ReplacedBy(file, s)))
+            .Where(t => t.Caret is not null
+                && string.Equals(t.Strike.Author, author, StringComparison.Ordinal)
+                && ReplyMarkup.ParentOf(t.Caret) == entry.InReplyTo
+                && SameRects(t.Strike, strikes[0])
+                && TailsOf(file, t.Strike) is var tails && tails.Count == strikes.Count - 1
+                && tails.Zip(strikes.Skip(1)).All(p => p.First is TextMarkupAnnotation m && SameRects(m, p.Second)))
+            .OrderBy(t => run.Claimed.Contains(t.Strike) ? 1 : 0)
+            .Select(t => ((StrikeOutAnnotation, CaretAnnotation)?)(t.Strike, t.Caret!))
+            .FirstOrDefault();
+        if (twin is var (strike, caret))
+        {
+            run.Claimed.Add(strike);
+            run.Claimed.Add(caret);
+            var members = new List<Annotation> { caret, strike };
+            members.AddRange(TailsOf(file, strike));
+            bool same = NormalizeContents(caret.Contents ?? "") == NormalizeContents(entry.Replacement!)
+                && NormalizeContents(strike.Contents ?? "") == NormalizeContents(comment ?? "")
+                && members.All(m => string.Equals(m.Color, color, StringComparison.OrdinalIgnoreCase))
+                && (!explicitOpacity || members.All(m => Math.Abs(m.Opacity - opacity) <= SameOpacityTolerance));
+            if (same) return Done(ActionUnchanged);
+
+            foreach (var member in new Annotation[] { caret, strike })
+                if (run.Touched.TryGetValue(member, out var earlier) && earlier != entryIndex)
+                    return ConflictFailure(located, earlier);
+
+            caret.Contents = entry.Replacement;
+            strike.Contents = comment;
+            foreach (var member in members)
+            {
+                member.Color = color;
+                // The reader's faithful colour components would otherwise mask the new hex colour.
+                member.ColorComponents = null;
+                if (explicitOpacity) member.Opacity = opacity;
+                run.Touched[member] = entryIndex;
+            }
+            return Done(ActionUpdated);
+        }
+
+        // At the end of the old text: the right edge of its last line, sized to that line.
+        var lastLine = geometry[^1][^1];
+        var (cx, cy, cw, ch) = Docx.DocxAnnotationBuilder.CaretBox(lastLine.Right, lastLine.Top, lastLine.Bottom);
+        var newCaret = new CaretAnnotation
+        {
+            X = cx, Y = cy, W = cw, H = ch,
+            Contents = entry.Replacement,
+            Subject = ReplaceTextSubject,
+            NativeId = Guid.NewGuid().ToString(),
+        };
+        if (entry.InReplyTo is { } parentId)
+            MarkAsReply(newCaret, parentId);
+
+        var head = strikes[0];
+        head.Contents = comment;
+        head.InReplyTo = newCaret.NativeId;
+        head.ReplyType = AnnotationReplyType.Group;
+        head.NativeId = Guid.NewGuid().ToString();
+
+        var built = new List<(int Page, Annotation Annotation)> { (headPage, head) };
+        for (int part = 1; part < strikes.Count; part++)
+            built.Add((placements[part].PageIndex, BuildContinuation(entry, geometry[part], head.NativeId, defaultOpacity)));
+        built.Add((placements[^1].PageIndex, newCaret));
+
+        var near = FindNearDuplicate(headList, head, run, file);
+        foreach (var (page, annotation) in built)
+        {
+            annotation.Color = color;
+            annotation.Opacity = opacity;
+            annotation.Author = author;
+            annotation.Source = AnnotationSource.RailReader;
+            if (explicitOpacity) run.ExplicitOpacity.Add(annotation);
+            if (!file.Pages.TryGetValue(page, out var list))
+                file.Pages[page] = list = [];
+            list.Add(annotation);
+            run.Touched[annotation] = entryIndex;
+            run.Claimed.Add(annotation);
+        }
+        return Done(ActionAdded, near);
+    }
+
+    private static bool SameRects(TextMarkupAnnotation a, TextMarkupAnnotation b)
+        => a.Rects.Count == b.Rects.Count
+           && a.Rects.Zip(b.Rects).All(p =>
+               Near(p.First.X, p.Second.X) && Near(p.First.Y, p.Second.Y)
+               && Near(p.First.W, p.Second.W) && Near(p.First.H, p.Second.H));
 
     /// <summary>What this run has done so far, for telling its own work from what pre-existed.</summary>
     private sealed class RunState
@@ -637,7 +807,7 @@ public static class MarkupPlanService
                 run.Ideals[note] = new NoteSpot(note.X, note.Y);
                 place(note);
             }
-            var nearDuplicate = FindNearDuplicate(pageAnnotations, annotation, run);
+            var nearDuplicate = FindNearDuplicate(pageAnnotations, annotation, run, file);
             pageAnnotations.Add(annotation);
             run.Touched[annotation] = entryIndex;
             run.Claimed.Add(annotation);
@@ -695,11 +865,7 @@ public static class MarkupPlanService
 
         return (a, b) switch
         {
-            (TextMarkupAnnotation ma, TextMarkupAnnotation mb) =>
-                ma.Rects.Count == mb.Rects.Count
-                && ma.Rects.Zip(mb.Rects).All(p =>
-                    Near(p.First.X, p.Second.X) && Near(p.First.Y, p.Second.Y)
-                    && Near(p.First.W, p.Second.W) && Near(p.First.H, p.Second.H)),
+            (TextMarkupAnnotation ma, TextMarkupAnnotation mb) => SameRects(ma, mb),
             // A note is a free-standing icon, so what it says is part of which note it is. One
             // this run placed is the same note only if it was aimed at the same spot; one read
             // back from the PDF may have been moved to make room when it was placed, so it only
@@ -721,17 +887,21 @@ public static class MarkupPlanService
     /// lines were split. Dedupe only recognises exact geometry from the same author, so this is
     /// what notices a re-applied record that differs in author or by a line break.
     /// </summary>
-    private static Annotation? FindNearDuplicate(List<Annotation> page, Annotation added, RunState run)
+    /// <remarks>
+    /// A replacement is compared with replacements alone, in either form; the strikeout of a caret
+    /// replacement links to its caret, which is how the pair is stored rather than a reply.
+    /// </remarks>
+    private static Annotation? FindNearDuplicate(List<Annotation> page, Annotation added, RunState run, AnnotationFile file)
     {
-        if (added is not TextMarkupAnnotation mb || ReplyMarkup.ParentOf(added) != null || ContinuationMarkup.Is(added))
+        bool replacement = IsReplacement(file, added) || (added is StrikeOutAnnotation { ReplyType: AnnotationReplyType.Group });
+        if (added is not TextMarkupAnnotation mb || (ReplyMarkup.ParentOf(added) != null && !replacement) || ContinuationMarkup.Is(added))
             return null;
-        bool replacement = ReplacementMarkup.TryParse(added, out _, out _);
         return page.OfType<TextMarkupAnnotation>()
             .Where(ma => ma.GetType() == mb.GetType()
                 && !run.Touched.ContainsKey(ma)
                 && !ContinuationMarkup.Is(ma)
-                && ReplyMarkup.ParentOf(ma) == null
-                && ReplacementMarkup.TryParse(ma, out _, out _) == replacement)
+                && IsReplacement(file, ma) == replacement
+                && (replacement || ReplyMarkup.ParentOf(ma) == null))
             .Select(ma => (Annotation: (Annotation)ma, Share: OverlapShare(ma, mb)))
             .Where(c => c.Share >= NearDuplicateOverlap)
             .OrderByDescending(c => c.Share)
