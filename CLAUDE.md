@@ -157,7 +157,7 @@ A gotcha the fixture exposed: marked-up text passes through `CleanText`, so anno
 
 Note also that the renderer paints **page content only**: annotation appearances are not drawn into the bitmap. A crop shows the text under the annotation, never the annotation itself — which is why the fixture's ink strokes are positioned over body text, so "the crop is not blank" is a meaningful assertion.
 
-Still not covered: `RenderPage` itself, and the `SkiaRenderedPage` cast in `CropAnnotationsAsync` — a non-Skia renderer silently yields no images.
+`RenderPage` itself and the `SkiaRenderedPage` cast in `CropAnnotationsAsync` are not unit-tested (a non-Skia renderer silently yields no images), but `tests/integration-smoke.sh` section 4 (`--images`) drives them against real pdfium on every build and release artifact: it asserts the crop count and that no crop is blank.
 
 ## Skill for AI-driven markup
 
