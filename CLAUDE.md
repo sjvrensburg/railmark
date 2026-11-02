@@ -116,7 +116,7 @@ Three release artifacts, all self-contained and all bundling `PP-DocLayoutV3.onn
 
 ### CI
 
-- `.github/workflows/ci.yml` — build + test on push/PR, plus a `linux-x64`/`win-x64` publish matrix that asserts the native libraries actually land in the output. Windows packaging is otherwise only exercised at release time.
+- `.github/workflows/ci.yml` — build + test on push/PR, plus a `linux-x64`/`win-x64` publish matrix that asserts the native libraries actually land in the output. Windows packaging is otherwise only exercised at release time. Runner images are pinned (`ubuntu-26.04`, `windows-2025`), not `-latest`, because the docx checks depend on the image's LibreOffice; bump both workflows together.
 - `.github/workflows/release.yml` — on a `v*` tag: verify the tag matches `<Version>` in `RailMark.csproj` **and** `VERSION` in `install.sh`, test, build and smoke-test all three artifacts, then open a **draft** release with them plus `SHA256SUMS`. Draft because releases carry hand-written notes. `workflow_dispatch` builds everything without releasing.
 
 Releasing therefore means: bump `RailMark.csproj` and `install.sh` together, merge, tag, then write the notes on the draft and publish.

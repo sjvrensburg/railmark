@@ -16,16 +16,17 @@ env:
   # Keep in step with scripts/download-model.sh.
   MODEL_SHA256: d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6
 
+# Runner images pinned to match ci.yml — see the note there.
 jobs:
   verify:
     name: Verify & test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -63,16 +64,16 @@ jobs:
   linux:
     name: Linux (AppImage + tarball)
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Cache layout model
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models
           key: onnx-model-${{ env.MODEL_SHA256 }}
@@ -131,7 +132,7 @@ jobs:
           # a silently missing one would degrade --export with no other signal.
           test -f "$(dirname "$launcher")/models/${MODEL_NAME}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -140,19 +141,19 @@ jobs:
   windows:
     name: Windows (zip)
     needs: verify
-    runs-on: windows-latest
+    runs-on: windows-2025
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Cache layout model
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models
           key: onnx-model-${{ env.MODEL_SHA256 }}
@@ -207,7 +208,7 @@ jobs:
           (cd build && 7z a -tzip "../dist/railmark-${VERSION}-win-x64.zip" "railmark-${VERSION}-win-x64" > /dev/null)
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -217,11 +218,11 @@ jobs:
     name: Publish release
     needs: [verify, linux, windows]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
