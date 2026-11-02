@@ -46,12 +46,15 @@ internal static class DocxReviewPreparer
         W + "proofErr", W + "permStart", W + "permEnd",
     ];
 
-    /// <summary>Property revisions this prototype does not annotate; the current value is kept.</summary>
-    private static readonly XName[] PropertyChanges =
-    [
-        W + "sectPrChange", W + "tblPrChange", W + "tblPrExChange", W + "tcPrChange", W + "trPrChange",
-        W + "tblGridChange", W + "numberingChange",
-    ];
+    /// <summary>Property revisions that are not annotated; the current value is kept.</summary>
+    private static readonly XName[] PropertyChanges = [W + "numberingChange"];
+
+    /// <summary>A table's property revisions, each holding the properties as they were before.</summary>
+    private static readonly XName[] TablePropertyChanges =
+        [W + "tblPrChange", W + "tblPrExChange", W + "trPrChange", W + "tcPrChange", W + "tblGridChange"];
+
+    /// <summary>Containers whose last paragraph drops a bookmark at its very end on export (see <see cref="KeepTrailingAnchors"/>).</summary>
+    private static readonly XName[] Frames = [W + "footnote", W + "endnote", W + "txbxContent"];
 
     public static DocxReview Prepare(string docxPath, string outputDocxPath)
     {
@@ -77,8 +80,9 @@ internal static class DocxReviewPreparer
                 XDocument xml;
                 using (var from = entry.Open()) xml = XDocument.Load(from, LoadOptions.PreserveWhitespace);
                 state.Part = match.Groups[1].Value.ToLowerInvariant();
-                if (state.Part == "document") review.BodyMargins = ReadBodyMargins(xml);
                 Rewrite(xml, state, comments);
+                // After the rewrite: a section change has put the original margins back.
+                if (state.Part == "document") review.BodyMargins = ReadBodyMargins(xml);
                 using var stream = target.CreateEntry(entry.FullName, CompressionLevel.Optimal).Open();
                 xml.Save(stream, SaveOptions.DisableFormatting);
             }
@@ -197,16 +201,26 @@ internal static class DocxReviewPreparer
     {
         var root = xml.Root!;
         RewriteComments(root, state, comments);
+        RewriteInsertedRows(root, state);
         RewriteFormatting(root, state);
+        RewriteParagraphProperties(root, state);
+        RewriteSectionProperties(root, state);
+        RewriteTableProperties(root, state);
         RewriteRevisions(root, state);
         RemoveInsertedParagraphs(root);
         SortPartInDocumentOrder(root, state);
 
-        // Paragraph-mark revisions and property revisions: drop the marker, keep the current value.
+        // Paragraph-mark and table-row revisions: drop the marker (a deleted row stays, its text
+        // struck through cell by cell; an inserted one is gone already).
         foreach (var mark in root.Descendants().Where(e =>
-                     (e.Name == W + "ins" || e.Name == W + "del" || e.Name == W + "moveFrom" || e.Name == W + "moveTo")
-                     && e.Parent?.Name == W + "rPr").ToList())
+                     RevisionContainers.Contains(e.Name) && e.Parent is { } parent && MarkerParents.Contains(parent.Name)).ToList())
             mark.Remove();
+        foreach (var mark in root.Descendants().Where(e =>
+                     e.Name == W + "cellIns" || e.Name == W + "cellDel" || e.Name == W + "cellMerge").ToList())
+        {
+            state.Review.CountUnsupported(mark.Name.LocalName);
+            mark.Remove();
+        }
         foreach (var name in PropertyChanges)
             foreach (var change in root.Descendants(name).ToList())
             {
@@ -219,6 +233,297 @@ internal static class DocxReviewPreparer
                      || e.Name == W + "customXmlInsRangeStart" || e.Name == W + "customXmlInsRangeEnd"
                      || e.Name == W + "customXmlDelRangeStart" || e.Name == W + "customXmlDelRangeEnd").ToList())
             marker.Remove();
+        KeepTrailingAnchors(root, state);
+    }
+
+    /// <summary>Where an ins/del is a marker on a paragraph mark or a table row, not a container of text.</summary>
+    private static readonly HashSet<XName> MarkerParents = [W + "rPr", W + "trPr"];
+
+    /// <summary>
+    /// LibreOffice exports no destination for a bookmark at the very end of the last paragraph of a
+    /// footnote, endnote or text box (one anywhere else, even at a paragraph's end, is fine). A word
+    /// joiner after it — zero width, no break opportunity, in the same font so the line keeps its
+    /// height — gives it a position.
+    /// </summary>
+    private static void KeepTrailingAnchors(XElement root, State state)
+    {
+        foreach (var frame in Frames.SelectMany(n => root.Descendants(n)).ToList())
+        {
+            if (frame.Elements(W + "p").LastOrDefault() is not { } p) continue;
+            var lastRun = p.Elements(W + "r").LastOrDefault();
+            bool ours = p.Elements(W + "bookmarkStart")
+                .Where(b => lastRun is null || b.IsAfter(lastRun))
+                .Any(b => ((string?)b.Attribute(W + "name"))?.StartsWith(state.Review.MarkPrefix, StringComparison.Ordinal) == true);
+            if (!ours) continue;
+            var rPr = lastRun?.Element(W + "rPr");
+            p.Add(new XElement(W + "r",
+                rPr is null ? null : new XElement(rPr),
+                new XElement(W + "t", "\u2060")));
+        }
+    }
+
+    // ---------------------------------------------------------------- table rows
+
+    private static bool IsInsertedRow(XElement tr) => tr.Element(W + "trPr")?.Element(W + "ins") is not null;
+
+    /// <summary>
+    /// An inserted table row (<c>w:trPr/w:ins</c>) is absent from the original, so it is removed; a
+    /// run of them by one author becomes one insertion at the place they were, carrying their cells'
+    /// text, and a table whose every row was inserted is removed whole. Bookmarks inside are kept.
+    /// </summary>
+    private static void RewriteInsertedRows(XElement root, State state)
+    {
+        foreach (var table in root.Descendants(W + "tbl").Where(t => t.Elements(W + "tr").Any(IsInsertedRow)).ToList())
+        {
+            if (table.Ancestors(W + "tr").Any(IsInsertedRow)) continue;   // goes with the row it is in
+            var rows = table.Elements(W + "tr").ToList();
+            bool whole = rows.All(IsInsertedRow);
+
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (!IsInsertedRow(rows[i])) continue;
+                var mark = rows[i].Element(W + "trPr")!.Element(W + "ins")!;
+                var author = NullIfEmpty((string?)mark.Attribute(W + "author"));
+                int j = i;
+                while (j + 1 < rows.Count && IsInsertedRow(rows[j + 1])
+                       && NullIfEmpty((string?)rows[j + 1].Element(W + "trPr")!.Element(W + "ins")!.Attribute(W + "author")) == author)
+                    j++;
+                var run = rows.GetRange(i, j - i + 1);
+                var text = string.Join("\n", run.Select(RowText));
+                var label = whole ? "Inserted table" : run.Count == 1 ? "Inserted table row" : "Inserted table rows";
+
+                var n = state.NextRevision++;
+                var item = state.Add(new DocxReviewItem
+                {
+                    Kind = DocxItemKind.Insertion, Id = n.ToString(CultureInfo.InvariantCulture), Author = author,
+                    Date = ParseDate((string?)mark.Attribute(W + "date")),
+                    Text = (run.Count == 1 && !whole ? label + ": " : label + ":\n") + text,
+                    PointMark = state.Mark($"r{n}p"),
+                });
+                var anchor = state.Bookmark(item.PointMark).Concat(run.SelectMany(KeptMarkers)).ToList();
+                foreach (var m in anchor.Skip(2)) m.Remove();
+                foreach (var r in run) r.Remove();
+
+                if (whole) PlaceAfter(table, anchor);
+                else if (j + 1 < rows.Count) AtStartOf(FirstParagraph(rows[j + 1]), anchor);
+                else if (rows.Take(i).LastOrDefault(r => !IsInsertedRow(r)) is { } before) AtEndOf(LastParagraph(before), anchor);
+                i = j;
+            }
+            if (whole) table.Remove();
+        }
+    }
+
+    private static string RowText(XElement tr)
+        => string.Join(" | ", tr.Elements(W + "tc").Select(tc => TextOf(tc).Replace('\n', ' ').Trim()));
+
+    private static XElement? FirstParagraph(XElement el) => el.Descendants(W + "p").FirstOrDefault();
+    private static XElement? LastParagraph(XElement el) => el.Descendants(W + "p").LastOrDefault();
+
+    private static void AtStartOf(XElement? p, IEnumerable<XElement> nodes)
+    {
+        if (p is null) return;
+        if (p.Element(W + "pPr") is { } pPr) pPr.AddAfterSelf(nodes);
+        else p.AddFirst(nodes);
+    }
+
+    private static void AtEndOf(XElement? p, IEnumerable<XElement> nodes) => p?.Add(nodes);
+
+    /// <summary>At the start of the paragraph after <paramref name="el"/>, or failing that the end of the one before.</summary>
+    private static void PlaceAfter(XElement el, List<XElement> nodes)
+    {
+        var next = el.ElementsAfterSelf().Select(e => e.Name == W + "p" ? e : FirstParagraph(e)).FirstOrDefault(p => p is not null);
+        if (next is not null) { AtStartOf(next, nodes); return; }
+        var previous = el.ElementsBeforeSelf().Reverse().Select(e => e.Name == W + "p" ? e : LastParagraph(e)).FirstOrDefault(p => p is not null);
+        AtEndOf(previous, nodes);
+    }
+
+    // ---------------------------------------------------------------- property revisions
+
+    private static readonly (string Tag, string Name)[] ParagraphPropertyNames =
+    [
+        ("pStyle", "Style"), ("jc", "Alignment"), ("ind", "Indentation"), ("spacing", "Spacing"),
+        ("numPr", "Bullets and numbering"), ("tabs", "Tabs"), ("pBdr", "Borders"), ("shd", "Shading"),
+        ("keepNext", "Keep with next"), ("keepLines", "Keep lines together"), ("pageBreakBefore", "Page break before"),
+        ("widowControl", "Widow control"), ("outlineLvl", "Outline level"), ("contextualSpacing", "Spacing"),
+        ("bidi", "Text direction"), ("textAlignment", "Alignment"), ("framePr", "Frame"),
+    ];
+
+    private static readonly (string Tag, string Name)[] SectionPropertyNames =
+    [
+        ("pgSz", "Page size"), ("pgMar", "Margins"), ("cols", "Columns"), ("type", "Section break"),
+        ("pgNumType", "Page numbering"), ("lnNumType", "Line numbering"), ("vAlign", "Vertical alignment"),
+        ("titlePg", "Different first page"), ("pgBorders", "Page borders"), ("docGrid", "Document grid"),
+        ("textDirection", "Text direction"),
+    ];
+
+    /// <summary>Names of the properties that differ between two property elements — Word's balloon wording, roughly.</summary>
+    private static List<string> ChangedProperties(XElement? before, XElement now, (string Tag, string Name)[] names, params XName[] ignore)
+    {
+        static string? Val(XElement? props, string tag)
+            => props?.Element(W + tag) is { } e ? e.ToString(SaveOptions.DisableFormatting) : null;
+        var parts = new List<string>();
+        foreach (var (tag, name) in names)
+            if (Val(before, tag) != Val(now, tag) && !parts.Contains(name)) parts.Add(name);
+        // Anything else that changed, unnamed.
+        var known = names.Select(n => W + n.Tag).Concat(ignore).ToHashSet();
+        bool other = (before?.Elements() ?? []).Concat(now.Elements()).Select(e => e.Name).Distinct()
+            .Where(n => !known.Contains(n))
+            .Any(n => before?.Element(n)?.ToString(SaveOptions.DisableFormatting) != now.Element(n)?.ToString(SaveOptions.DisableFormatting));
+        if (other) parts.Add("other properties");
+        return parts;
+    }
+
+    /// <summary>
+    /// A paragraph-property revision (<c>w:pPrChange</c>: alignment, indentation, style, bullets and
+    /// numbering…) renders the paragraph as it was and is annotated over its text, like a run-format
+    /// change. Neighbouring paragraphs changed alike by one author read as one change.
+    /// </summary>
+    private static void RewriteParagraphProperties(XElement root, State state)
+    {
+        DocxReviewItem? last = null;
+        XElement? lastParagraph = null, lastEnd = null;
+        foreach (var change in root.Descendants(W + "pPrChange").ToList())
+        {
+            var pPr = change.Parent;
+            var p = pPr?.Parent;
+            if (pPr is null || p is null || p.Name != W + "p")
+            {
+                change.Remove();
+                continue;
+            }
+
+            var original = change.Element(W + "pPr");
+            var author = NullIfEmpty((string?)change.Attribute(W + "author"));
+            var date = ParseDate((string?)change.Attribute(W + "date"));
+            change.Remove();
+            var now = new XElement(pPr);
+            var parts = ChangedProperties(original, now, ParagraphPropertyNames, W + "rPr", W + "sectPr");
+            var description = "Paragraph formatted" + (parts.Count > 0 ? ": " + string.Join(", ", parts) : "");
+
+            // The paragraph as it was: its old properties, with the mark's run properties and any
+            // section break, which pPrChange does not record, kept.
+            var kept = pPr.Elements().Where(e => e.Name == W + "rPr" || e.Name == W + "sectPr").ToList();
+            pPr.RemoveNodes();
+            if (original is not null) pPr.Add(original.Elements());
+            pPr.Add(kept);
+
+            if (last is not null && lastEnd is not null && lastParagraph?.ElementsAfterSelf().FirstOrDefault() == p
+                && last.Author == author && last.Text == description)
+            {
+                // Move the end bookmark (start + end element) to this paragraph's end.
+                var endPair = new[] { (XElement)lastEnd.PreviousNode!, lastEnd };
+                foreach (var m in endPair) m.Remove();
+                p.Add(endPair);
+                lastParagraph = p;
+                continue;
+            }
+
+            var n = state.NextRevision++;
+            last = state.Add(new DocxReviewItem
+            {
+                Kind = DocxItemKind.Formatting, Id = n.ToString(CultureInfo.InvariantCulture), Author = author,
+                Date = date, Text = description,
+                StartMark = state.Mark($"r{n}s"), EndMark = state.Mark($"r{n}e"),
+            });
+            AtStartOf(p, state.Bookmark(last.StartMark));
+            var end = state.Bookmark(last.EndMark);
+            p.Add(end);
+            (lastParagraph, lastEnd) = (p, end[1]);
+        }
+    }
+
+    /// <summary>
+    /// A section-property revision (<c>w:sectPrChange</c>: page size, margins, columns…) puts the
+    /// old properties back, keeping the header and footer references it does not record, and is
+    /// noted at the start of the section.
+    /// </summary>
+    private static void RewriteSectionProperties(XElement root, State state)
+    {
+        var sections = root.Descendants(W + "sectPr").ToList();
+        foreach (var change in root.Descendants(W + "sectPrChange").ToList())
+        {
+            var sectPr = change.Parent!;
+            var original = change.Element(W + "sectPr");
+            var author = NullIfEmpty((string?)change.Attribute(W + "author"));
+            var date = ParseDate((string?)change.Attribute(W + "date"));
+            change.Remove();
+            var parts = ChangedProperties(original, new XElement(sectPr), SectionPropertyNames,
+                W + "headerReference", W + "footerReference", W + "footnotePr", W + "endnotePr", W + "printerSettings");
+
+            var kept = sectPr.Elements().Where(e => e.Name == W + "headerReference" || e.Name == W + "footerReference").ToList();
+            sectPr.RemoveNodes();
+            sectPr.Add(kept);
+            if (original is not null) sectPr.Add(original.Elements());
+
+            // A section runs from just after the previous section break to the paragraph holding
+            // its own (or, for the last, to the end of the body).
+            int k = sections.IndexOf(sectPr);
+            var previousBreak = k > 0 ? sections[k - 1].Ancestors(W + "p").FirstOrDefault() : null;
+            var first = previousBreak is not null
+                ? previousBreak.ElementsAfterSelf().Select(e => e.Name == W + "p" ? e : FirstParagraph(e)).FirstOrDefault(p => p is not null)
+                : root.Descendants(W + "body").FirstOrDefault() is { } body ? FirstParagraph(body) : null;
+            if (first is null) continue;
+
+            var n = state.NextRevision++;
+            var item = state.Add(new DocxReviewItem
+            {
+                Kind = DocxItemKind.Formatting, Id = n.ToString(CultureInfo.InvariantCulture), Author = author, Date = date,
+                Text = "Section formatted" + (parts.Count > 0 ? ": " + string.Join(", ", parts) : ""),
+                PointMark = state.Mark($"r{n}p"),
+            });
+            AtStartOf(first, state.Bookmark(item.PointMark));
+        }
+    }
+
+    /// <summary>
+    /// A table's property revisions (table, row, cell, grid) put the old properties back and are
+    /// noted once per table and author, at the start of its first cell.
+    /// </summary>
+    private static void RewriteTableProperties(XElement root, State state)
+    {
+        var changes = TablePropertyChanges.SelectMany(n => root.Descendants(n)).ToList();
+        // Word writes a grid change with no author: it joins the table's first authored change.
+        string? AuthorOf(XElement c) => NullIfEmpty((string?)c.Attribute(W + "author"))
+            ?? changes.Where(o => o.Ancestors(W + "tbl").First() == c.Ancestors(W + "tbl").First())
+                .Select(o => NullIfEmpty((string?)o.Attribute(W + "author"))).FirstOrDefault(a => a is not null);
+        foreach (var group in changes
+                     .GroupBy(c => (Table: c.Ancestors(W + "tbl").First(), Author: AuthorOf(c)))
+                     .ToList())
+        {
+            var what = new List<string>();
+            DateTimeOffset? date = null;
+            foreach (var change in group)
+            {
+                date ??= ParseDate((string?)change.Attribute(W + "date"));
+                var props = change.Parent!;
+                var original = change.Elements().FirstOrDefault();
+                change.Remove();
+                // Row and cell property elements also carry revision markers of their own: keep them.
+                var kept = props.Elements().Where(e => RevisionContainers.Contains(e.Name)
+                    || e.Name == W + "cellIns" || e.Name == W + "cellDel" || e.Name == W + "cellMerge").ToList();
+                props.RemoveNodes();
+                if (original is not null) props.Add(original.Elements());
+                props.Add(kept);
+                var name = change.Name.LocalName switch
+                {
+                    "tblPrChange" or "tblPrExChange" => "Table properties",
+                    "trPrChange" => "Row properties",
+                    "tcPrChange" => "Cell properties",
+                    _ => "Column widths",
+                };
+                if (!what.Contains(name)) what.Add(name);
+            }
+
+            if (FirstParagraph(group.Key.Table) is not { } first) continue;
+            var n = state.NextRevision++;
+            var item = state.Add(new DocxReviewItem
+            {
+                Kind = DocxItemKind.Formatting, Id = n.ToString(CultureInfo.InvariantCulture), Author = group.Key.Author,
+                Date = date, Text = "Table formatted: " + string.Join(", ", what),
+                PointMark = state.Mark($"r{n}p"),
+            });
+            AtStartOf(first, state.Bookmark(item.PointMark));
+        }
     }
 
     /// <summary>
@@ -327,7 +632,7 @@ internal static class DocxReviewPreparer
         // Outermost revisions only: an ins wrapping a del (inserted, then deleted by someone else)
         // is wholly absent from the original, and goes with its ins.
         var revisions = root.Descendants()
-            .Where(e => RevisionContainers.Contains(e.Name) && e.Parent?.Name != W + "rPr"
+            .Where(e => RevisionContainers.Contains(e.Name) && !(e.Parent is { } parent && MarkerParents.Contains(parent.Name))
                         && !e.Ancestors().Any(a => RevisionContainers.Contains(a.Name)))
             .ToList();
 
@@ -473,6 +778,9 @@ internal static class DocxReviewPreparer
             else if (e.Name == W + "br" || e.Name == W + "cr") sb.Append('\n');
             else if (e.Name == W + "p" && !ReferenceEquals(e, el) && sb.Length > 0) sb.Append('\n');
             else if (e.Name == W + "noBreakHyphen") sb.Append('‑');
+            // A picture has no text to quote; a text box inside a drawing has, and is read as text.
+            else if ((e.Name == W + "drawing" || e.Name == W + "pict") && !e.Descendants(W + "t").Any()) sb.Append("[image]");
+            else if (e.Name == W + "object") sb.Append("[object]");
         }
         return sb.ToString();
     }

@@ -65,8 +65,8 @@ if [ "$status" -ne 0 ]; then
 fi
 echo "  ok   exit code 0"
 if [ "$(jq '[.[] | select(.success | not)] | length' "$WORK/report.json")" = "0" ] \
-   && [ "$(jq 'length' "$WORK/report.json")" = "15" ]; then
-    echo "  ok   all 15 review items placed"
+   && [ "$(jq 'length' "$WORK/report.json")" = "25" ]; then
+    echo "  ok   all 25 review items placed"
 else
     echo "  FAIL report: $(cat "$WORK/report.json")" >&2
     failures=$((failures + 1))
@@ -121,8 +121,33 @@ expect "format change → underline describing it" \
 expect "move → strikeout at the source and a caret at the destination" \
     "([$A | select(.type == \"strikeout\" and .quote == \"Moved sentence.\")] | length == 1)
      and ([$A | select(.type == \"caret\" and .comment == \"Moved sentence.\" and .subject == \"Moved Text\")] | length == 1)"
+expect "a comment ending a footnote, and a deletion ending it, are markup, not fallback notes" \
+    "([$A | select(.type == \"highlight\" and .quote == \"noted words\" and .author == \"Fay\")] | length == 1)
+     and ([$A | select(.type == \"strikeout\" and .quote == \"deleted in note\")] | length == 1)"
+expect "a comment ending a text box is a highlight over its range" \
+    "[$A | select(.type == \"highlight\" and .quote == \"text box words\" and .author == \"Tex\")] | length == 1"
+expect "an inserted table row is one caret carrying its cells; the row is not in the original" \
+    "[$A | select(.type == \"caret\" and .comment == \"Inserted table row: New A | New B\")] | length == 1"
+expect "a deleted table row is struck through cell by cell" \
+    "([$A | select(.type == \"strikeout\" and .quote == \"Old A\")] | length == 1)
+     and ([$A | select(.type == \"strikeout\" and .quote == \"Old B\")] | length == 1)"
+expect "an inserted table is one caret" \
+    "[$A | select(.type == \"caret\" and .comment == \"Inserted table:\\nT1 | T2\\nT3 | T4\")] | length == 1"
+expect "a paragraph-property change → underline describing it" \
+    "[$A | select(.type == \"underline\" and .author == \"Pat\" and .comment == \"Paragraph formatted: Alignment\")] | length == 1"
+expect "table- and section-property changes → notes" \
+    "([$A | select(.type == \"note\" and .author == \"Tom\" and .comment == \"Table formatted: Table properties\")] | length == 1)
+     and ([$A | select(.type == \"note\" and .author == \"Sam\" and .comment == \"Section formatted: Page numbering\")] | length == 1)"
 expect "Word's dates survive" \
     "[$A | select(.author == \"Bob\" and (.created // .date // \"\" | startswith(\"2026-10-31\")))] | length == 1"
+
+# The anchors are named destinations; none may be left in the output.
+if grep -aqE '[/(]RR[a-z]{5}[a-z0-9]*[cr][0-9]+[sep]' "$WORK/review.pdf"; then
+    echo "  FAIL anchor destinations left in the PDF" >&2
+    failures=$((failures + 1))
+else
+    echo "  ok   no anchor destinations left in the PDF"
+fi
 
 if [ "$failures" -gt 0 ]; then
     # Enough to diagnose without the PDF: every record, quotes shortened, plus the placement report.
