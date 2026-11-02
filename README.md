@@ -228,7 +228,9 @@ Beyond the basics:
 - **Page breaks.** A quote may run from the bottom of one page onto the next, past a running
   footer or header.
 - **Suggested replacements.** `"type": "replace"` with a `"replacement"` strikes the quote
-  through and records the text that should replace it.
+  through and records the text that should replace it, as Acrobat's *Replace Text*: a caret
+  carrying the new text, with the strikeout grouped to it. (A PDF encrypted with RC4 or AES-128
+  can't hold a caret; there it is one strikeout reading `Replace with: …`.)
 - **Replies.** `"inReplyTo": "<id>"` (ids come from `--format json`) answers an existing comment;
   a reply note needs no quote.
 - **Re-applying is safe.** Markup already present is reported `unchanged` rather than duplicated,

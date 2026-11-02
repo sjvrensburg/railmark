@@ -497,12 +497,13 @@ public class MarkupPlanServiceTests
     private static int MarkedCharStart(AnnotationFile file)
         => (int)(((TextMarkupAnnotation)file.Pages[0].Single()).Rects[0].Y - 20f);
 
-    private static (AnnotationFile file, MarkupPlanApplyResult result) ResolveOne(MarkupEntry entry, string pageText = RepeatedText, bool includeContext = false)
+    private static (AnnotationFile file, MarkupPlanApplyResult result) ResolveOne(
+        MarkupEntry entry, string pageText = RepeatedText, bool includeContext = false, bool carets = true)
         => MarkupPlanService.Resolve(
             new MarkupPlan { Entries = [entry] },
             new FakePdfService(pageCount: 1, pageSize: (600, 800)),
             new FakePdfTextService(new Dictionary<int, string> { [0] = pageText }),
-            includeContext: includeContext);
+            includeContext: includeContext, carets: carets);
 
     [Fact]
     public void Resolve_Warns_When_Quote_Is_Ambiguous_And_Marks_The_First()
@@ -634,11 +635,11 @@ public class MarkupPlanServiceTests
     [InlineData(null, "Replace with: red fox")]
     [InlineData("", "Replace with: red fox")]
     [InlineData("Colour is wrong.", "Replace with: red fox\n\nColour is wrong.")]
-    public void Resolve_Writes_Replace_As_Tagged_Strikeout(string? comment, string expectedContents)
+    public void Resolve_Writes_Replace_As_Tagged_Strikeout_Without_Carets(string? comment, string expectedContents)
     {
         var (file, result) = ResolveOne(
             new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "red fox", Comment = comment },
-            "The quick brown fox jumps.");
+            "The quick brown fox jumps.", carets: false);
 
         Assert.True(result.Entries[0].Success);
         Assert.Equal(MarkupType.Replace, result.Entries[0].Type);
@@ -647,6 +648,170 @@ public class MarkupPlanServiceTests
         Assert.Equal(expectedContents, strike.Contents);
         // Full glyph box, like a plain strikeout — not the underline's baseline band.
         Assert.Equal(10f, strike.Rects[0].H, precision: 3);
+    }
+
+    private static (CaretAnnotation Caret, StrikeOutAnnotation Strike) Pair(AnnotationFile file, int page = 0)
+        => (Assert.Single(file.Pages[page].OfType<CaretAnnotation>()), Assert.Single(file.Pages[page].OfType<StrikeOutAnnotation>()));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Colour is wrong.")]
+    public void Resolve_Writes_Replace_As_A_Caret_With_A_Grouped_Strikeout(string? comment)
+    {
+        var (file, result) = Apply(
+            [new() { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "red fox", Comment = comment }]);
+
+        Assert.Equal("added", result.Entries[0].Action);
+        Assert.Equal(2, file.Pages[0].Count);
+        var (caret, strike) = Pair(file);
+        // Acrobat's Replace Text: the caret carries the new text, the strikeout is grouped to it.
+        Assert.Equal("red fox", caret.Contents);
+        Assert.Equal("Replace Text", caret.Subject);
+        Assert.Equal(caret.NativeId, strike.InReplyTo);
+        Assert.Equal(AnnotationReplyType.Group, strike.ReplyType);
+        Assert.Equal(comment, strike.Contents);
+        Assert.Null(strike.Subject);
+        Assert.False(ReplacementMarkup.TryParse(strike, out _, out _));
+        Assert.All(new Annotation[] { caret, strike }, a =>
+        {
+            Assert.Equal("#0066FF", a.Color);
+            Assert.Equal("AI Reviewer", a.Author);
+        });
+        // At the end of the old text — the fake puts "brown fox" at x 10..19, y 30..40 — half a
+        // line high, straddling the baseline.
+        Assert.Equal(19f, caret.X + caret.W / 2, precision: 3);
+        Assert.Equal(5f, caret.H, precision: 3);
+        Assert.InRange(caret.Y + caret.H, 38f, 40f);
+        Assert.Equal(10f, strike.Rects[0].H, precision: 3);
+    }
+
+    [Fact]
+    public void Reapplying_A_Caret_Replacement_Changes_Nothing_And_A_New_Replacement_Updates_It()
+    {
+        var entry = new MarkupEntry { Page = 1, Quote = "brown fox", Type = MarkupType.Replace, Replacement = "red fox", Comment = "why" };
+        var (first, _) = Apply([entry]);
+        var (caret, strike) = Pair(first);
+
+        var (again, same) = Apply([entry], first);
+        Assert.Equal("unchanged", same.Entries[0].Action);
+        Assert.Equal(2, again.Pages[0].Count);
+
+        var (revised, changed) = Apply([entry with { Replacement = "grey fox", Comment = "better", Color = "#FF0000" }], again);
+        Assert.Equal("updated", changed.Entries[0].Action);
+        Assert.Equal(2, revised.Pages[0].Count);
+        Assert.Same(caret, Pair(revised).Caret);
+        Assert.Equal("grey fox", caret.Contents);
+        Assert.Equal("better", strike.Contents);
+        Assert.Equal("#FF0000", caret.Color);
+        Assert.Equal("#FF0000", strike.Color);
+    }
+
+    [Fact]
+    public void A_Replacement_Written_As_A_Tagged_Strikeout_Is_Matched_In_Its_Own_Form()
+    {
+        var entry = new MarkupEntry { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" };
+        var (old, _) = Apply([entry], carets: false);
+
+        var (file, result) = Apply([entry with { Comment = "tense" }], old);
+
+        Assert.Equal("updated", result.Entries[0].Action);
+        var strike = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[0]));
+        Assert.True(ReplacementMarkup.TryParse(strike, out var replacement, out var comment));
+        Assert.Equal(("leaps", "tense"), (replacement, comment));
+    }
+
+    [Fact]
+    public void A_Replacement_By_Another_Author_Is_A_New_One_And_A_Near_Duplicate()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps", Author = "Ann" }]);
+
+        var (file, result) = Apply([new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "hops" }], first);
+
+        Assert.Equal("added", result.Entries[0].Action);
+        Assert.Equal(4, file.Pages[0].Count);
+        Assert.Contains("Near-duplicate of", result.Entries[0].Warning);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Update_Of_Either_Half_Of_A_Caret_Replacement_Changes_The_Pair(bool byCaret)
+    {
+        var (file, _) = Apply([new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps", Comment = "old" }]);
+        var (caret, strike) = Pair(file);
+
+        var (updated, result) = Apply(
+            [new() { Page = 1, Update = byCaret ? caret.NativeId : strike.NativeId, Comment = "new", Color = "#00AA00", Author = "Ed" }], file);
+
+        Assert.Equal("updated", result.Entries[0].Action);
+        Assert.Equal(2, updated.Pages[0].Count);
+        Assert.Equal("leaps", caret.Contents);
+        Assert.Equal("new", strike.Contents);
+        Assert.All(new Annotation[] { caret, strike }, a =>
+        {
+            Assert.Equal("#00AA00", a.Color);
+            Assert.Equal("Ed", a.Author);
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Removing_Either_Half_Of_A_Caret_Replacement_Removes_Both(bool byCaret)
+    {
+        var (file, _) = Apply(
+        [
+            new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps" },
+            new() { Page = 1, Quote = "lazy dog", Type = MarkupType.Highlight },
+        ]);
+        var (caret, strike) = Pair(file);
+
+        var (after, result) = Apply([], file, removeIds: [byCaret ? caret.NativeId! : strike.NativeId!]);
+
+        Assert.Equal(2, result.Removed);
+        Assert.IsType<HighlightAnnotation>(Assert.Single(after.Pages[0]));
+    }
+
+    [Fact]
+    public void A_Caret_Replacement_Over_A_Page_Break_Puts_The_Caret_At_The_End_Of_The_Old_Text()
+    {
+        var (file, result) = ResolveTwoPages(
+            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Replace, Replacement = "every measurement", Comment = "c" });
+
+        Assert.Equal(2, result.Entries[0].EndPage);
+        var head = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[0]));
+        var tail = file.Pages[1].OfType<StrikeOutAnnotation>().Single();
+        var caret = file.Pages[1].OfType<CaretAnnotation>().Single();
+        Assert.Equal(caret.NativeId, head.InReplyTo);
+        Assert.Equal(AnnotationReplyType.Group, head.ReplyType);
+        Assert.Equal("c", head.Contents);
+        Assert.Equal("every measurement", caret.Contents);
+        Assert.True(ContinuationMarkup.Is(tail));
+        Assert.Equal(head.NativeId, ContinuationMarkup.HeadOf(tail));
+        Assert.Equal(tail.Rects[^1].X + tail.Rects[^1].W, caret.X + caret.W / 2, precision: 3);
+
+        var (again, same) = ResolveTwoPages(
+            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Replace, Replacement = "every measurement", Comment = "c" },
+            existing: file);
+        Assert.Equal("unchanged", same.Entries[0].Action);
+        Assert.Equal(3, again.Pages.Values.Sum(l => l.Count));
+    }
+
+    [Fact]
+    public void A_Replace_Replying_To_An_Annotation_Links_Its_Caret()
+    {
+        var (first, _) = Apply([new() { Page = 1, Quote = "lazy dog", Type = MarkupType.Highlight }]);
+        var parentId = first.Pages[0][0].NativeId = "h1";
+
+        var (file, result) = Apply([new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps", InReplyTo = parentId }], first);
+
+        Assert.True(result.Entries[0].Success);
+        var (caret, strike) = Pair(file);
+        Assert.Equal(parentId, caret.InReplyTo);
+        Assert.Equal(caret.NativeId, strike.InReplyTo);
+
+        var (_, again) = Apply([new() { Page = 1, Quote = "jumps", Type = MarkupType.Replace, Replacement = "leaps", InReplyTo = parentId }], file);
+        Assert.Equal("unchanged", again.Entries[0].Action);
     }
 
     [Theory]
@@ -711,14 +876,15 @@ public class MarkupPlanServiceTests
 
     private static (AnnotationFile file, MarkupPlanApplyResult result) Apply(
         List<MarkupEntry> entries, AnnotationFile? existing = null, string? replaceAuthor = null,
-        bool replaceUnauthored = false, IReadOnlyCollection<string>? removeIds = null, float? defaultOpacity = null)
+        bool replaceUnauthored = false, IReadOnlyCollection<string>? removeIds = null, float? defaultOpacity = null,
+        bool carets = true)
         => MarkupPlanService.Resolve(
             new MarkupPlan { Entries = entries },
             new FakePdfService(pageCount: 1, pageSize: (600, 800)),
             new FakePdfTextService(new Dictionary<int, string> { [0] = "The quick brown fox jumps over the lazy dog." }),
             existing,
             replaceAuthor: replaceAuthor, replaceUnauthored: replaceUnauthored, removeIds: removeIds,
-            defaultOpacity: defaultOpacity);
+            defaultOpacity: defaultOpacity, carets: carets);
 
     private static List<MarkupEntry> MixedPlan() =>
     [
@@ -734,7 +900,7 @@ public class MarkupPlanServiceTests
         var (file, result) = Apply(MixedPlan());
 
         Assert.All(result.Entries, e => Assert.Equal("added", e.Action));
-        Assert.Equal(4, file.Pages[0].Count);
+        Assert.Equal(5, file.Pages[0].Count); // the replace is a caret and a strikeout
     }
 
     [Fact]
@@ -745,7 +911,7 @@ public class MarkupPlanServiceTests
 
         Assert.All(result.Entries, e => Assert.Equal("unchanged", e.Action));
         Assert.All(result.Entries, e => Assert.True(e.Success));
-        Assert.Equal(4, second.Pages[0].Count);
+        Assert.Equal(5, second.Pages[0].Count);
     }
 
     [Fact]
@@ -769,7 +935,7 @@ public class MarkupPlanServiceTests
         var (second, result) = Apply(revised, existing: first);
 
         Assert.Equal(["updated", "unchanged", "unchanged", "unchanged"], result.Entries.Select(e => e.Action));
-        Assert.Equal(4, second.Pages[0].Count);
+        Assert.Equal(5, second.Pages[0].Count);
         Assert.Same(existingId, second.Pages[0][0]);
         Assert.Equal("revised", second.Pages[0][0].Contents);
         Assert.Equal("#0066FF", second.Pages[0][0].Color);
@@ -824,7 +990,8 @@ public class MarkupPlanServiceTests
         Assert.Equal([true, false, true, false], result.Entries.Select(e => e.Success));
         Assert.Contains("Conflicts with entry 1", result.Entries[1].Error);
         Assert.Contains("Conflicts with entry 3", result.Entries[3].Error);
-        Assert.Equal(["one", "Replace with: leaps"], file.Pages[0].Select(a => a.Contents));
+        // The highlight, then the replacement's strikeout (no comment) and its caret.
+        Assert.Equal(["one", null, "leaps"], file.Pages[0].Select(a => a.Contents));
     }
 
     [Fact]
@@ -855,7 +1022,7 @@ public class MarkupPlanServiceTests
         var (second, result) = Apply([MixedPlan()[0] with { Author = "Second Reviewer" }], existing: first);
 
         Assert.Equal("added", result.Entries[0].Action);
-        Assert.Equal(5, second.Pages[0].Count);
+        Assert.Equal(6, second.Pages[0].Count); // MixedPlan's replace is a caret and a strikeout
     }
 
     [Fact]
@@ -868,7 +1035,7 @@ public class MarkupPlanServiceTests
         ]);
 
         Assert.Equal(["added", "added"], result.Entries.Select(e => e.Action));
-        Assert.Equal(2, file.Pages[0].Count);
+        Assert.Equal(3, file.Pages[0].Count); // the replacement's caret, its strikeout, and the deletion
     }
 
     [Fact]
@@ -1419,13 +1586,14 @@ public class MarkupPlanServiceTests
     private const string Page2 = "Journal header\nmeasurement with a fresh batch of samples, and it agreed.";
 
     private static (AnnotationFile file, MarkupPlanApplyResult result) ResolveTwoPages(
-        MarkupEntry entry, AnnotationFile? existing = null, bool includeContext = false, string page2 = Page2)
+        MarkupEntry entry, AnnotationFile? existing = null, bool includeContext = false, string page2 = Page2,
+        bool carets = true)
         => MarkupPlanService.Resolve(
             new MarkupPlan { Entries = [entry] },
             new FakePdfService(pageCount: 2, pageSize: (600, 800)),
             new FakePdfTextService(new Dictionary<int, string> { [0] = Page1, [1] = page2 }),
             existing,
-            includeContext: includeContext);
+            includeContext: includeContext, carets: carets);
 
     [Fact]
     public void FindAcrossPageBreak_Splits_Between_Words_Past_Footer_And_Header()
@@ -1607,10 +1775,11 @@ public class MarkupPlanServiceTests
     }
 
     [Fact]
-    public void Resolve_Splits_A_Replacement_With_The_Replacement_On_The_First_Half()
+    public void Resolve_Splits_A_Tagged_Replacement_With_The_Replacement_On_The_First_Half()
     {
         var (file, _) = ResolveTwoPages(
-            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Replace, Replacement = "every measurement" });
+            new() { Page = 1, Quote = "the whole measurement", Type = MarkupType.Replace, Replacement = "every measurement" },
+            carets: false);
 
         var head = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[0]));
         var tail = Assert.IsType<StrikeOutAnnotation>(Assert.Single(file.Pages[1]));

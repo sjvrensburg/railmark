@@ -607,6 +607,28 @@ public class MarkdownBuilderTests
     }
 
     [Fact]
+    public void Caret_Replacement_Shows_The_Strikeouts_Comment_And_Threads_Replies_To_It()
+    {
+        // What --apply-markup writes: the caret carries the new text, the strikeout the reason.
+        var caret = new CaretAnnotation { X = 150, Y = 200, W = 5, H = 5, NativeId = "c", Contents = "leaps" };
+        var strike = new StrikeOutAnnotation
+        {
+            Rects = [new(50, 200, 100, 10)], NativeId = "s", InReplyTo = "c",
+            ReplyType = AnnotationReplyType.Group, Contents = "Tense.",
+        };
+        var reply = new TextNoteAnnotation { X = 500, Y = 230, NativeId = "n", InReplyTo = "s", Text = "Agreed." };
+        var file = MakeFile([(0, [strike, caret, reply])]);
+        var texts = new Dictionary<(int, int), string> { [(0, 0)] = "jumps" };
+
+        var md = Build(file, [H("Ch1", 0)], texts).Build().ReplaceLineEndings("\n");
+
+        Assert.Contains("> ~~jumps~~ → **leaps**\n>\n> **Comment:** Tense.\n", md);
+        // A reply to the strikeout is threaded under the replacement, which renders as its caret.
+        Assert.Contains("suggested replacement)*\n\n> > **Reply:** Agreed.", md);
+        Assert.Equal(1, CountOccurrences(md, "Agreed."));
+    }
+
+    [Fact]
     public void StrikeOut_Replying_To_Unknown_Id_Stays_Standalone()
     {
         var strikeOut = new StrikeOutAnnotation

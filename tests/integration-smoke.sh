@@ -252,8 +252,9 @@ check   "highlight landed on the second occurrence" "${WORK}/occ.md" "A second *
 nocheck "first occurrence not bolded"               "${WORK}/occ.md" "every **run of the experiment**"
 
 # --- 6. Suggested replacement ------------------------------------------------
-# PDFium can't create the caret Acrobat pairs with a strikeout, so a replacement
-# is a strikeout tagged via /Subj. That tag has to survive a real write + read.
+# Acrobat's Replace Text: a caret carrying the new text, with the strikeout over
+# the old text grouped to it (/IRT + /RT /Group). PDFium can't create a caret;
+# Core's post-pass does, so only a real write + read proves the pair.
 echo ""
 section "replace"
 cat > "${WORK}/replace.json" <<'PLAN'
@@ -270,6 +271,28 @@ check  "replacement comment"       "${WORK}/replace.md" "**Comment:** Plainer wo
 check  "replacement labelled"      "${WORK}/replace.md" "suggested replacement"
 check  "plain strikeout unchanged" "${WORK}/replace.md" "~~No attempt~~"
 nocheck "tag not leaked"           "${WORK}/replace.md" "Replace with:"
+check  "caret written"             "${WORK}/replace.pdf" "/Subtype/Caret"
+check  "strikeout grouped to it"   "${WORK}/replace.pdf" "/RT /Group"
+nocheck "no tagged strikeout"      "${WORK}/replace.pdf" "(Replacement)"
+"${RAILMARK[@]}" "${WORK}/replace.pdf" --format json -o "${WORK}/replace-rec.json" > /dev/null 2>&1
+jcheck "pair read back as one replace" "${WORK}/replace-rec.json" \
+    '[.annotations[] | select(.type == "replace")] | length == 1 and .[0].replacement == "modest but reliable" and .[0].comment == "Plainer wording."'
+jcheck "caret not listed on its own" "${WORK}/replace-rec.json" 'all(.annotations[]; .type != "caret")'
+
+# Under RC4/AES-128 encryption the writer can't create a caret; the run is redone
+# with RailMark's single tagged strikeout, so the replacement text isn't lost.
+if command -v qpdf > /dev/null; then
+    qpdf --encrypt "" owner 128 --use-aes=y -- "$FIXTURE" "${WORK}/aes128.pdf"
+    "${RAILMARK[@]}" "${WORK}/aes128.pdf" --apply-markup "${WORK}/replace.json" \
+        -o "${WORK}/aes128-out.pdf" > "${WORK}/aes128.out" 2> "${WORK}/aes128.err"
+    check  "AES-128: fallback announced" "${WORK}/aes128.err" "can't hold the caret"
+    jcheck "AES-128: entries still added" "${WORK}/aes128.out" 'all(.[]; .success and .action == "added")'
+    "${RAILMARK[@]}" "${WORK}/aes128-out.pdf" --format json -o "${WORK}/aes128-rec.json" > /dev/null 2>&1
+    jcheck "AES-128: replacement kept as a tagged strikeout" "${WORK}/aes128-rec.json" \
+        '[.annotations[] | select(.type == "replace")] | length == 1 and .[0].replacement == "modest but reliable" and .[0].comment == "Plainer wording."'
+else
+    echo "  SKIP AES-128 fallback (no qpdf)"
+fi
 
 # --- 7. Re-applying a plan ----------------------------------------------------
 # Geometry read back from a PDF is not bit-identical to what was written, so
@@ -292,14 +315,15 @@ jcheck "first apply adds everything" "${WORK}/idem1.out" 'all(.[]; .action == "a
 "${RAILMARK[@]}" "${WORK}/idem1.pdf" --apply-markup "${WORK}/idem.json" -o "${WORK}/idem2.pdf" > "${WORK}/idem2.out" 2>/dev/null
 jcheck "second apply finds every annotation" "${WORK}/idem2.out" 'all(.[]; .action == "unchanged")'
 "${RAILMARK[@]}" "${WORK}/idem2.pdf" -o "${WORK}/idem2.md" > /dev/null 2>&1
-check "no duplicates after re-apply" "${WORK}/idem2.md" "**10 annotations**"
+# 11: the fixture's 4, and the plan's 6 entries, the replace being a caret and a strikeout.
+check "no duplicates after re-apply" "${WORK}/idem2.md" "**11 annotations**"
 
 # Revising one comment updates that annotation instead of adding a second.
 sed 's/first round/second round/' "${WORK}/idem.json" > "${WORK}/idem-rev.json"
 "${RAILMARK[@]}" "${WORK}/idem2.pdf" --apply-markup "${WORK}/idem-rev.json" -o "${WORK}/idem3.pdf" > "${WORK}/idem3.out" 2>/dev/null
 jcheck "revised comment updated in place" "${WORK}/idem3.out" '.[0].action == "updated" and ([.[1:][] | .action] | all(. == "unchanged"))'
 "${RAILMARK[@]}" "${WORK}/idem3.pdf" -o "${WORK}/idem3.md" > /dev/null 2>&1
-check   "still no duplicates"    "${WORK}/idem3.md" "**10 annotations**"
+check   "still no duplicates"    "${WORK}/idem3.md" "**11 annotations**"
 check   "new comment present"    "${WORK}/idem3.md" "**Comment:** second round"
 nocheck "old comment gone"       "${WORK}/idem3.md" "first round"
 
@@ -310,7 +334,7 @@ cat > "${WORK}/round2.json" <<'PLAN'
 PLAN
 "${RAILMARK[@]}" "${WORK}/idem3.pdf" --apply-markup "${WORK}/round2.json" --replace-author "AI Reviewer" \
     -o "${WORK}/round2.pdf" > /dev/null 2> "${WORK}/round2.err"
-check "removal reported" "${WORK}/round2.err" 'Removed 6 earlier annotation(s) by "AI Reviewer"'
+check "removal reported" "${WORK}/round2.err" 'Removed 7 earlier annotation(s) by "AI Reviewer"'
 "${RAILMARK[@]}" "${WORK}/round2.pdf" -o "${WORK}/round2.md" > /dev/null 2>&1
 check   "only the new round and the fixture's own remain" "${WORK}/round2.md" "**5 annotations**"
 check   "new round present"  "${WORK}/round2.md" "round two"
