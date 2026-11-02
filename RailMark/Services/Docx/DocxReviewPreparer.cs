@@ -28,6 +28,7 @@ internal static class DocxReviewPreparer
     internal static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     private static readonly XNamespace W14 = "http://schemas.microsoft.com/office/word/2010/wordml";
     private static readonly XNamespace W15 = "http://schemas.microsoft.com/office/word/2012/wordml";
+    private static readonly XNamespace Mc = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 
     private static readonly Regex StoryPart =
         new(@"^word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$", RegexOptions.IgnoreCase);
@@ -439,7 +440,9 @@ internal static class DocxReviewPreparer
     /// </summary>
     private static void RewriteSectionProperties(XElement root, State state)
     {
-        var sections = root.Descendants(W + "sectPr").ToList();
+        // The document's section breaks only: each sectPrChange holds a sectPr of its own (the
+        // original), which is detached below and would otherwise stand in for its neighbour.
+        var sections = root.Descendants(W + "sectPr").Where(s => s.Parent?.Name != W + "sectPrChange").ToList();
         foreach (var change in root.Descendants(W + "sectPrChange").ToList())
         {
             var sectPr = change.Parent!;
@@ -773,6 +776,8 @@ internal static class DocxReviewPreparer
         var sb = new StringBuilder();
         foreach (var e in el.DescendantsAndSelf())
         {
+            // An mc:AlternateContent carries the same shape twice (Choice and Fallback): read one.
+            if (e.Ancestors(Mc + "Fallback").Any()) continue;
             if (e.Name == W + "t" || e.Name == W + "delText") sb.Append(e.Value);
             else if (e.Name == W + "tab") sb.Append('\t');
             else if (e.Name == W + "br" || e.Name == W + "cr") sb.Append('\n');

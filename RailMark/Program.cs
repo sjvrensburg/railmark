@@ -372,8 +372,9 @@ if (markupPlanPath != null)
         // A replacement is a caret plus a strikeout, but the writer can't create a caret in every
         // PDF (RC4/AES-128 encryption): one it couldn't write keeps its RailReader source. Then the
         // run is redone from the original bytes with the single tagged strikeout instead.
-        bool wantsCarets = annotationFileToSave.Pages.Values.SelectMany(l => l)
+        bool HasUnwrittenCaret(AnnotationFile f) => f.Pages.Values.SelectMany(l => l)
             .Any(a => a is CaretAnnotation { Source: AnnotationSource.RailReader });
+        bool wantsCarets = HasUnwrittenCaret(annotationFileToSave);
         var originalBytes = wantsCarets && inPlace ? File.ReadAllBytes(pdfPath) : null;
 
         bool saved;
@@ -382,12 +383,11 @@ if (markupPlanPath != null)
             saved = CompositeAnnotationStore.Default.Save(markupOutputPath, annotationFileToSave);
             if (saved && wantsCarets
                 && CompositeAnnotationStore.Default.GetSidecarFallbackReason(markupOutputPath) is null
-                && annotationFileToSave.Pages.Values.SelectMany(l => l)
-                    .Any(a => a is CaretAnnotation { Source: AnnotationSource.RailReader }))
+                && HasUnwrittenCaret(annotationFileToSave))
             {
                 Console.Error.WriteLine(
-                    "Warning: this PDF can't hold the caret of a native replacement (its encryption predates "
-                    + "AES-256); replacements are written as one strikeout tagged \"Replace with: …\" instead.");
+                    "Warning: this PDF can't hold the caret of a native replacement (usually encryption older "
+                    + "than AES-256); replacements are written as one strikeout tagged \"Replace with: …\" instead.");
                 if (originalBytes is not null) File.WriteAllBytes(pdfPath, originalBytes);
                 else File.Copy(pdfPath, markupOutputPath, overwrite: true);
                 existing = CompositeAnnotationStore.Default.Load(pdfPath);

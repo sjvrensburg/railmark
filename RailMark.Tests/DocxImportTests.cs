@@ -350,6 +350,27 @@ public class DocxImportTests : IDisposable
     }
 
     [Fact]
+    public void Consecutive_Section_Changes_Are_Each_Noted_At_Their_Own_Section()
+    {
+        // Each sectPrChange holds a sectPr of its own; the second section must be found from the
+        // first section's real break, not from the original the first change carried.
+        string Change(string id) =>
+            $"<w:sectPrChange w:id=\"{id}\" w:author=\"Sam\" {Date}><w:sectPr><w:pgMar w:top=\"1440\" w:bottom=\"1440\"/></w:sectPr></w:sectPrChange>";
+        var docx = MakeDocx(
+            P($"<w:pPr><w:sectPr><w:pgMar w:top=\"720\" w:bottom=\"720\"/>{Change("1")}</w:sectPr></w:pPr>", R("First section."))
+            + P(R("Second section."))
+            + $"<w:sectPr><w:pgMar w:top=\"720\" w:bottom=\"720\"/>{Change("2")}</w:sectPr>");
+
+        var (review, doc) = Prepare(docx);
+
+        Assert.Equal(2, review.Items.Count);
+        var paragraphs = doc.Descendants(W + "p").ToList();
+        Assert.True(HasMark(paragraphs[0], review.Items[0].PointMark));
+        Assert.True(HasMark(paragraphs[1], review.Items[1].PointMark));
+        Assert.False(HasMark(paragraphs[0], review.Items[1].PointMark));
+    }
+
+    [Fact]
     public void Table_Property_Changes_Restore_The_Original_And_Are_One_Note_Per_Table()
     {
         var docx = MakeDocx("<w:tbl><w:tblPr><w:tblW w:w=\"5000\"/>"
