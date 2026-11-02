@@ -141,6 +141,11 @@ if grep -qF "inter pretable" "${WORK}/annots.md"; then
 else
     echo "  ok   no split-word artefact"
 fi
+# The highlight is shown in its own sentence, on one blockquote line — not the
+# whole page, whose line breaks would end the blockquote after its first line.
+check   "highlight shown in its sentence" "${WORK}/annots.md" \
+    "> The model described here is **interpretable in practice**, which is the point of the exercise."
+nocheck "highlight context is not the page" "${WORK}/annots.md" "contents are known"
 check "strikeout rendered"      "${WORK}/annots.md" "~~paragraph sits under the second heading~~"
 check "strikeout labelled"      "${WORK}/annots.md" "suggested deletion"
 # Marked-up text goes through CleanText, which normalises the PDF's curly

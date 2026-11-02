@@ -329,11 +329,9 @@ public class MarkdownBuilder
             var pageText = _continuations.ContainsKey((page, annotIdx)) ? null : _pageTexts?.GetValueOrDefault(page);
             if (pageText != null)
             {
-                // The context is page text emitted verbatim, so it still carries the extractor's
-                // invisible de-hyphenation markers. Strip them after the offsets have been used.
-                var bolded = TextLocator.StripInvisibleMarkers(
-                    BoldHighlightInContext(page, annotIdx, pageText, highlightedText));
-                sb.AppendLine($"> {bolded}");
+                // The sentence around the highlight, on one line (SentenceAround also drops the
+                // extractor's invisible de-hyphenation markers).
+                sb.AppendLine($"> {BoldHighlightInContext(page, annotIdx, pageText, highlightedText)}");
             }
             else
             {
@@ -526,10 +524,7 @@ public class MarkdownBuilder
             var match = _markupOffsets != null && _markupOffsets.TryGetValue((page, annotIdx), out var offset)
                 ? matches.MinBy(m => Math.Abs(m.CharStart - offset))
                 : matches[0];
-            var end = match.CharStart + match.CharLength;
-            return pageText[..match.CharStart]
-                + "**" + pageText[match.CharStart..end] + "**"
-                + pageText[end..];
+            return TextLocator.SentenceAround(pageText, match.CharStart, match.CharStart + match.CharLength);
         }
 
         // Fall back to just the highlighted text bolded

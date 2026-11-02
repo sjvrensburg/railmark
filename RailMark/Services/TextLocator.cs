@@ -126,14 +126,152 @@ internal static class TextLocator
         return result;
     }
 
+    /// <summary>How far, in characters, <see cref="SentenceAround"/> reaches either side of the span.</summary>
+    internal const int MaxContextChars = 200;
+
     /// <summary>
-    /// Removes the invisible markers PdfTextService leaves in extracted text — the soft hyphen and
-    /// the U+0002/U+0003 de-hyphenation markers — without touching anything else, line breaks in
-    /// particular. Use when emitting page text verbatim into Markdown, where the markers would
-    /// otherwise ride along as unprintable characters and split a de-hyphenated word in two.
+    /// The sentence holding <c>[start, end)</c> of <paramref name="pageText"/>, on one line, with the
+    /// span bolded \u2014 what annotation mode shows around a highlight, rather than the whole page.
+    /// A sentence ends at <c>.</c>/<c>!</c>/<c>?</c>/<c>\u2026</c> (plus any closing quote or bracket)
+    /// before whitespace, at a blank line, or at the end of a line much shorter than the page's
+    /// typical line (a heading, or a paragraph's last line). Past <see cref="MaxContextChars"/> on
+    /// either side it is cut at a word and marked with an ellipsis. Line breaks become spaces, except
+    /// after a hyphen, which rejoins the word; the extractor's invisible markers are dropped.
     /// </summary>
-    internal static string StripInvisibleMarkers(string text)
-        => text.Replace("\u0002", "").Replace("\u0003", "").Replace("\u00AD", "");
+    internal static string SentenceAround(string pageText, int start, int end)
+    {
+        var lines = LineSpans(pageText);
+        int shortLine = ShortLineThreshold(pageText, lines);
+
+        int from = start;
+        bool cutBefore = false;
+        while (from > 0)
+        {
+            if (start - from >= MaxContextChars) { cutBefore = true; break; }
+            char c = pageText[from - 1];
+            if (char.IsWhiteSpace(c))
+            {
+                if (c == '\n' && EndsParagraph(pageText, LineAt(lines, from - 1), shortLine)) break;
+                if (EndsSentence(pageText, from - 1)) break;
+            }
+            from--;
+        }
+
+        int to = end;
+        bool cutAfter = false;
+        while (to < pageText.Length)
+        {
+            if (to - end >= MaxContextChars) { cutAfter = true; break; }
+            char c = pageText[to];
+            if (char.IsWhiteSpace(c))
+            {
+                if (c is '\n' or '\r' && EndsParagraph(pageText, LineAt(lines, to), shortLine)) break;
+                if (EndsSentence(pageText, to)) break;
+            }
+            to++;
+        }
+
+        // A cut falls between words, never inside one.
+        if (cutBefore)
+            while (from < start && !char.IsWhiteSpace(pageText[from])) from++;
+        if (cutAfter)
+            while (to > end && !char.IsWhiteSpace(pageText[to - 1])) to--;
+
+        return (cutBefore ? "\u2026 " : "")
+            + OneLine(pageText[from..start]).TrimStart()
+            + "**" + OneLine(pageText[start..end]).Trim() + "**"
+            + OneLine(pageText[end..to]).TrimEnd()
+            + (cutAfter ? " \u2026" : "");
+    }
+
+    /// <summary>
+    /// True when the text before the whitespace at <paramref name="ws"/> closes a sentence: terminal
+    /// punctuation, optionally followed by closing quotes or brackets.
+    /// </summary>
+    private static bool EndsSentence(string text, int ws)
+    {
+        int i = ws - 1;
+        while (i >= 0 && IsInvisible(text[i])) i--;
+        while (i >= 0 && text[i] is '"' or '\'' or ')' or ']' or '\u201D' or '\u2019' or '\u00BB') i--;
+        return i >= 0 && text[i] is '.' or '!' or '?' or '\u2026';
+    }
+
+    /// <summary>A line that is blank, or ends well short of the page's typical line, closes its paragraph.</summary>
+    private static bool EndsParagraph(string text, LineSpan line, int shortLine)
+    {
+        int length = VisibleLength(text, line);
+        return length == 0 || length < shortLine;
+    }
+
+    /// <summary>Text on one line: whitespace runs become one space, and a line break after a hyphen none.</summary>
+    private static string OneLine(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        bool space = false, joined = false;
+        foreach (char c in text)
+        {
+            if (IsInvisible(c) || (char.IsControl(c) && !char.IsWhiteSpace(c))) continue;
+            if (char.IsWhiteSpace(c))
+            {
+                if (c is '\n' or '\r' && !space && sb.Length > 0 && IsHyphen(sb[^1])) joined = true;
+                else if (!joined) space = true;
+                continue;
+            }
+            if (space) sb.Append(' ');
+            space = joined = false;
+            sb.Append(c);
+        }
+        if (space) sb.Append(' ');
+        return sb.ToString();
+    }
+
+    private readonly record struct LineSpan(int Start, int End);
+
+    /// <summary>Each line's <c>[Start, End)</c>, the line break (a CRLF's CR included) excluded.</summary>
+    private static List<LineSpan> LineSpans(string text)
+    {
+        var spans = new List<LineSpan>();
+        int s = 0;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            if (i < text.Length && text[i] != '\n') continue;
+            int e = i > s && text[i - 1] == '\r' ? i - 1 : i;
+            spans.Add(new LineSpan(s, e));
+            s = i + 1;
+        }
+        return spans;
+    }
+
+    /// <summary>The line holding <paramref name="pos"/>; a line break belongs to the line it ends.</summary>
+    private static LineSpan LineAt(List<LineSpan> lines, int pos)
+    {
+        int lo = 0, hi = lines.Count - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (lines[mid].Start <= pos) lo = mid; else hi = mid - 1;
+        }
+        return lines[lo];
+    }
+
+    private static int VisibleLength(string text, LineSpan line)
+    {
+        var span = text.AsSpan(line.Start, line.End - line.Start).Trim();
+        int n = 0;
+        foreach (char c in span)
+            if (!IsInvisible(c)) n++;
+        return n;
+    }
+
+    /// <summary>
+    /// Under 60% of the median non-blank line's length. Zero (no line is short) on a page of fewer
+    /// than three lines, where a median says nothing.
+    /// </summary>
+    private static int ShortLineThreshold(string text, List<LineSpan> lines)
+    {
+        var lengths = lines.Select(l => VisibleLength(text, l)).Where(n => n > 0).Order().ToList();
+        return lengths.Count < 3 ? 0 : (int)(lengths[lengths.Count / 2] * 0.6);
+    }
 
     /// <summary>
     /// Rebuilds the page-text span covered by a multi-line text-markup annotation, given the text
