@@ -713,6 +713,26 @@ jcheck "re-attribution kept the ids" "${WORK}/attr2.ann.json" \
     "[.annotations[] | select(.author == \"Bob\") | .id] | sort == $(jq -c '[.entries[].update] | sort' "${WORK}/attr-upd.json")"
 check_indirect "updated annotations stay indirect" "${WORK}/attr2.pdf"
 
+# Core 0.82.2: a save that changes any annotation also promotes the direct /Annots entries it did
+# not write — here a /Square another producer left inline on page 1. The fixture must show as
+# direct first (an empty plan changes nothing, so it promotes nothing), or the check proves nothing.
+DIRECT_FIXTURE="${REPO_ROOT}/tests/fixtures/sample-direct-annots.pdf"
+"${RAILMARK[@]}" "$DIRECT_FIXTURE" --apply-markup "${WORK}/empty.json" -o "${WORK}/flat.pdf" > /dev/null 2>&1
+if grep -ao '/Annots *\[[^]]*\]' "${WORK}/flat.pdf" | grep -q '<<'; then
+    echo "  ok   direct fixture keeps its inline /Annots entry on an unchanged save"
+else
+    echo "  FAIL direct fixture has no inline /Annots entry after an empty plan" >&2
+    failures=$((failures + 1))
+fi
+cat > "${WORK}/direct.json" <<'PLAN'
+{"entries":[{"page":1,"quote":"measured twice","type":"highlight","author":"Alice"}]}
+PLAN
+"${RAILMARK[@]}" "$DIRECT_FIXTURE" --apply-markup "${WORK}/direct.json" -o "${WORK}/direct.pdf" > /dev/null 2>&1
+check_indirect "foreign direct annotations promoted on save" "${WORK}/direct.pdf"
+"${RAILMARK[@]}" "${WORK}/direct.pdf" --format json -o - > "${WORK}/direct.ann.json" 2>/dev/null
+jcheck "promoted annotation survives intact" "${WORK}/direct.ann.json" \
+    '[.annotations[] | select(.page == 1) | [.type, (.comment // "")]] | sort == [["highlight", ""], ["rect", "heading box"]]'
+
 echo ""
 if [ "$failures" -ne 0 ]; then
     echo "${failures} check(s) failed." >&2

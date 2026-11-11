@@ -1,0 +1,136 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 16 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R /Annots [<< /Type /Annot /Subtype /Square /Rect [66 690 320 732] /C [1 0 0] /CA 1 /F 4 /T (fixture) /Contents (heading box) >>] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R /Annots [13 0 R 14 0 R 15 0 R] >>
+endobj
+5 0 obj
+<< /Length 581 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Introduction) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(This document exists so the RailMark test suite has a PDF whose exact) Tj
+0 -18 Td
+(contents are known. The model described here is inter-) Tj
+0 -18 Td
+(pretable in practice, which is the point of the exercise.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(The reviewer called it ìthe best available optionî at the time.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Methods) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Each sample was measured twice and the results were averaged. This) Tj
+0 -18 Td
+(paragraph sits under the second heading on the same page.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 339 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Results) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(No attempt was made to preserve the original ordering of the samples.) Tj
+0 -18 Td
+(The effect was small but consistent across every run of the experiment.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(A second run of the experiment repeated the whole) Tj
+ET
+BT
+/F1 12 Tf
+72 60 Td
+(Page 2) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Outlines /First 9 0 R /Last 11 0 R /Count 3 >>
+endobj
+9 0 obj
+<< /Title (Introduction) /Parent 8 0 R /Next 10 0 R /Dest [3 0 R /XYZ 72 720 0] >>
+endobj
+10 0 obj
+<< /Title (Methods) /Parent 8 0 R /Prev 9 0 R /Next 11 0 R /Dest [3 0 R /XYZ 72 576 0] >>
+endobj
+11 0 obj
+<< /Title (Results) /Parent 8 0 R /Prev 10 0 R /Dest [4 0 R /XYZ 72 720 0] >>
+endobj
+12 0 obj
+null
+endobj
+13 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [100 670 140 700] /InkList [[100 675 120 695 140 680]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke a) >>
+endobj
+14 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [155 670 195 700] /InkList [[160 675 180 695 190 680]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke b) >>
+endobj
+15 0 obj
+<< /Type /Annot /Subtype /Ink /Rect [395 660 455 695] /InkList [[400 665 425 690 450 670]] /C [0 0 1] /CA 1 /F 4 /T (fixture) /Contents (stroke c) >>
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 17 0 R >>
+endobj
+17 0 obj
+<< /Length 88 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(measurement with a fresh batch of samples, and it agreed.) Tj
+ET
+endstream
+endobj
+xref
+0 18
+0000000000 65535 f 
+0000000015 00000 n 
+0000000080 00000 n 
+0000000150 00000 n 
+0000000404 00000 n 
+0000000561 00000 n 
+0000001193 00000 n 
+0000001583 00000 n 
+0000001680 00000 n 
+0000001752 00000 n 
+0000001850 00000 n 
+0000001956 00000 n 
+0000002050 00000 n 
+0000002071 00000 n 
+0000002237 00000 n 
+0000002403 00000 n 
+0000002569 00000 n 
+0000002697 00000 n 
+trailer
+<< /Size 18 /Root 1 0 R >>
+startxref
+2836
+%%EOF

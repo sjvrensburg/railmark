@@ -28,7 +28,15 @@ renders to something visible:
   * Three /Ink strokes on page 2: two within the 50pt merge distance of each
     other and one far away, so freehand grouping produces two images, not three.
 
-Usage:  python3 tests/fixtures/make-sample-pdf.py [output.pdf]
+With --direct-annots it writes tests/fixtures/sample-direct-annots.pdf instead:
+the same document, but page 1's /Square sits as a dictionary directly inside
+/Annots rather than as an indirect object. ISO 32000 forbids that, yet older
+PDFium-based writers produce it, and MuPDF/PyMuPDF don't see such annotations.
+Core 0.82.2 promotes every such entry on any save that changes an annotation;
+the integration checks use this variant to prove a RailMark save does that to
+annotations it didn't write itself.
+
+Usage:  python3 tests/fixtures/make-sample-pdf.py [--direct-annots] [output.pdf]
 """
 
 import sys
@@ -106,15 +114,22 @@ def ink_annot(rect, inklist, label):
     )
 
 
-def build():
+def build(direct_annots=False):
     objects = {}
 
     objects[1] = b"<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R >>"
     objects[2] = b"<< /Type /Pages /Kids [3 0 R 4 0 R 16 0 R] /Count 3 >>"
+    # Square over "Introduction" (drawn at y=720) and the first body line.
+    # Coordinates are PDF-native (bottom-up); see the note on annotations below.
+    square = (
+        b"<< /Type /Annot /Subtype /Square /Rect [66 690 320 732] "
+        b"/C [1 0 0] /CA 1 /F 4 /T (fixture) /Contents (heading box) >>"
+    )
+    page1_annots = square if direct_annots else b"12 0 R"
     objects[3] = (
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R "
-        b"/Annots [12 0 R] >>"
+        b"/Annots [" + page1_annots + b"] >>"
     )
     objects[4] = (
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
@@ -162,11 +177,9 @@ def build():
     # store converts them to top-down when loading, which is the convention
     # ScreenshotService works in.
     #
-    # Square over "Introduction" (drawn at y=720) and the first body line.
-    objects[12] = (
-        b"<< /Type /Annot /Subtype /Square /Rect [66 690 320 732] "
-        b"/C [1 0 0] /CA 1 /F 4 /T (fixture) /Contents (heading box) >>"
-    )
+    # Object 12 is the square, unless it is inlined in page 1's /Annots; it
+    # stays allocated either way because the xref assumes contiguous numbers.
+    objects[12] = b"null" if direct_annots else square
 
     # Ink strokes. The renderer draws page content only — annotation appearances
     # are not painted into the bitmap — so a crop shows whatever text lies under
@@ -204,7 +217,10 @@ def build():
 
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1] if len(sys.argv) > 1 else
-                  Path(__file__).parent / "sample.pdf")
-    target.write_bytes(build())
+    args = sys.argv[1:]
+    direct = "--direct-annots" in args
+    args = [a for a in args if a != "--direct-annots"]
+    default = "sample-direct-annots.pdf" if direct else "sample.pdf"
+    target = Path(args[0] if args else Path(__file__).parent / default)
+    target.write_bytes(build(direct_annots=direct))
     print(f"Wrote {target} ({target.stat().st_size} bytes)")

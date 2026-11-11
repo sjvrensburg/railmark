@@ -32,6 +32,8 @@ jobs:
         run: |
           python3 tests/fixtures/make-sample-pdf.py /tmp/regen.pdf
           cmp tests/fixtures/sample.pdf /tmp/regen.pdf
+          python3 tests/fixtures/make-sample-pdf.py --direct-annots /tmp/regen-direct.pdf
+          cmp tests/fixtures/sample-direct-annots.pdf /tmp/regen-direct.pdf
 
       # The integration checks encrypt a copy of the fixture (AES-128) with qpdf.
       - name: Install qpdf
