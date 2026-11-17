@@ -136,12 +136,13 @@ current one, keep following this file directly.
 2. **Read `notes.md` and act as a technical editor.** Decide what's worth marking up. See
    "Editorial conventions" below for which annotation type fits which kind of feedback.
 
-   **Don't trust the export for duplication.** `--export` sometimes emits one block twice, the
-   copies differing only in line breaks or spacing. This has been seen with list items containing
-   inline maths, and with reference-list entries. Before you flag repeated text, a duplicated
-   bullet, or a reference listed twice, confirm it with the dry run (step 4). Quote the repeated
-   text and leave out `occurrence` and context. A real duplicate reports `matchCount` of 2 or
-   more; `matchCount: 1` means the text appears once on that page, so drop the entry.
+   **Don't trust the export for duplication.** Before railmark 0.20.3, `--export` sometimes
+   emitted one block twice, the copies differing only in line breaks or spacing. This was seen
+   with list items containing inline maths, and with reference-list entries. Before you flag
+   repeated text, a duplicated bullet, or a reference listed twice, confirm it with the dry run
+   (step 4) — on any version, since it costs little. Quote the repeated text and leave out
+   `occurrence` and context. A real duplicate reports `matchCount` of 2 or more; `matchCount: 1`
+   means the text appears once on that page, so drop the entry.
    `matchCount` only counts matches on the entry's page.
 
 3. **Draft a markup plan JSON file** following `references/markup-plan-schema.md`. A worked
