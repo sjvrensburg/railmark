@@ -1,61 +1,84 @@
 using RailMark.Services;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
-using RailReader.Renderer.Skia;
 using SkiaSharp;
 
 namespace RailMark.Tests;
 
 /// <summary>
 /// Geometry tests for ScreenshotService. These need no PDF and no pdfium — the parts of the
-/// service that decide *which pixels to crop* are pure functions, and that is where the bugs
+/// service that decide *which region to render* are pure functions, and that is where the bugs
 /// live (issue #22 was a double-applied Y flip that shipped unnoticed).
 /// </summary>
 public class ScreenshotServiceTests
 {
-    // A 612x792pt page rendered at the service's 300 dpi: 612 * (300/72) x 792 * (300/72).
-    private const int PageBmpW = 2550;
-    private const int PageBmpH = 3300;
+    private const double PageW = 612, PageH = 792;
     private const double Scale = 300.0 / 72.0;
-    private const int Padding = 40;
+    private const double PaddingPt = 40 / Scale;
+
+    // The fake page is red across its top eighth, white below, which makes the vertical placement
+    // of a crop checkable by sampling one pixel.
+    private const double RedBandPt = PageH / 8;
 
     private static FreehandAnnotation Stroke(params (float x, float y)[] points)
         => new() { Color = "#F00", Points = [.. points.Select(p => new PointF(p.x, p.y))] };
 
-    /// <summary>
-    /// Serves a synthetic page bitmap, so the whole crop pipeline can be driven without pdfium.
-    /// The page is white with a red band across its top eighth, which makes the vertical
-    /// placement of a crop checkable by sampling one pixel.
-    /// </summary>
-    private sealed class FakePdfService : IPdfService, IDisposable
-    {
-        private readonly List<SKBitmap> _issued = [];
+    /// <summary>The fake page's colour at a page-point y.</summary>
+    private static byte[] PixelAt(double yPt) => yPt < RedBandPt ? [255, 0, 0] : [255, 255, 255];
 
+    /// <summary>
+    /// A backend without region rendering: only <see cref="IPdfService.RenderPagePixmap(int, int)"/>,
+    /// so Core's <see cref="PdfRegionRendering"/> renders the page and crops.
+    /// </summary>
+    private class FakePdfService : IPdfService
+    {
         public byte[] PdfBytes => [];
         public int PageCount => 1;
         public List<OutlineEntry> Outline => [];
-        public (double Width, double Height) GetPageSize(int pageIndex) => (612, 792);
+        public (double Width, double Height) GetPageSize(int pageIndex) => (PageW, PageH);
 
-        public IRenderedPage RenderPage(int pageIndex, int dpi = 200)
-        {
-            var bitmap = new SKBitmap(PageBmpW, PageBmpH);
-            using (var canvas = new SKCanvas(bitmap))
-            {
-                canvas.Clear(SKColors.White);
-                using var paint = new SKPaint { Color = SKColors.Red };
-                canvas.DrawRect(new SKRect(0, 0, PageBmpW, PageBmpH / 8f), paint);
-            }
-            _issued.Add(bitmap);
-            return new SkiaRenderedPage(bitmap);
-        }
-
+        public IRenderedPage RenderPage(int pageIndex, int dpi = 200) => throw new NotSupportedException();
         public IRenderedPage RenderThumbnail(int pageIndex) => throw new NotSupportedException();
-        public (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
-            => throw new NotSupportedException();
 
-        public void Dispose()
+        public virtual (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
         {
-            foreach (var b in _issued) b.Dispose();
+            double scale = targetSize / Math.Max(PageW, PageH);
+            int w = (int)(PageW * scale), h = (int)(PageH * scale);
+            var rgb = new byte[w * h * 3];
+            for (int row = 0; row < h; row++)
+            {
+                var px = PixelAt(row / scale);
+                for (int col = 0; col < w; col++) px.CopyTo(rgb, (row * w + col) * 3);
+            }
+            return (rgb, w, h);
+        }
+    }
+
+    /// <summary>
+    /// A backend with region rendering, as <c>SkiaPdfService</c> has: paints only the requested
+    /// region, records each request, and refuses whole-page renders.
+    /// </summary>
+    private sealed class FakeRegionPdfService : FakePdfService, IPdfRegionRenderService
+    {
+        public List<(BBox Region, double Scale)> Requests { get; } = [];
+
+        public override (byte[] RgbBytes, int Width, int Height) RenderPagePixmap(int pageIndex, int targetSize)
+            => throw new NotSupportedException("whole-page render");
+
+        public (byte[] RgbBytes, int Width, int Height) RenderRegionPixmap(int pageIndex, BBox region,
+            double scale, int viewRotation = 0, CancellationToken ct = default)
+        {
+            Requests.Add((region, scale));
+            int x0 = (int)Math.Floor(region.X * scale), y0 = (int)Math.Floor(region.Y * scale);
+            int w = (int)Math.Ceiling((region.X + region.W) * scale) - x0;
+            int h = (int)Math.Ceiling((region.Y + region.H) * scale) - y0;
+            var rgb = new byte[w * h * 3];
+            for (int row = 0; row < h; row++)
+            {
+                var px = PixelAt((y0 + row) / scale);
+                for (int col = 0; col < w; col++) px.CopyTo(rgb, (row * w + col) * 3);
+            }
+            return (rgb, w, h);
         }
     }
 
@@ -66,94 +89,77 @@ public class ScreenshotServiceTests
         return file;
     }
 
-    // --- ToPixelRect: coordinate mapping ---
+    // --- ToRegion: coordinate mapping ---
 
     [Fact]
-    public void ToPixelRect_Maps_A_Top_Of_Page_Annotation_To_The_Top_Of_The_Bitmap()
+    public void ToRegion_Keeps_A_Top_Of_Page_Annotation_At_The_Top()
     {
         // Annotation coordinates arrive top-down: CompositeAnnotationStore has already converted
-        // from the PDF's bottom-up space. y=62 means 62pt below the top edge.
-        var rect = ScreenshotService.ToPixelRect(72, 62, 228, 40, PageBmpW, PageBmpH);
+        // from the PDF's bottom-up space. y=62 means 62pt below the top edge, and the region
+        // renderer takes the same space, so there is no flip (issue #22 was a double flip).
+        var region = ScreenshotService.ToRegion(72, 62, 228, 40, PageW, PageH);
 
-        Assert.NotNull(rect);
-        var expectedTop = (int)(62 * Scale) - Padding;
-        Assert.Equal(expectedTop, rect!.Value.Top);
-        // Sanity: firmly in the upper third, not mirrored into the lower one.
-        Assert.True(rect.Value.Top < PageBmpH / 3,
-            $"expected a top-of-page crop, got Top={rect.Value.Top} of {PageBmpH}");
+        Assert.NotNull(region);
+        Assert.Equal(62 - PaddingPt, region!.Value.Y, 3);
     }
 
     [Fact]
-    public void ToPixelRect_Maps_A_Bottom_Of_Page_Annotation_To_The_Bottom_Of_The_Bitmap()
+    public void ToRegion_Preserves_Vertical_Ordering()
     {
-        var rect = ScreenshotService.ToPixelRect(72, 700, 228, 40, PageBmpW, PageBmpH);
-
-        Assert.NotNull(rect);
-        Assert.True(rect!.Value.Top > PageBmpH * 2 / 3,
-            $"expected a bottom-of-page crop, got Top={rect.Value.Top} of {PageBmpH}");
-    }
-
-    [Fact]
-    public void ToPixelRect_Preserves_Vertical_Ordering()
-    {
-        // Whatever the mapping, an annotation higher on the page must crop higher in the bitmap.
-        var upper = ScreenshotService.ToPixelRect(72, 100, 100, 20, PageBmpW, PageBmpH);
-        var lower = ScreenshotService.ToPixelRect(72, 500, 100, 20, PageBmpW, PageBmpH);
+        var upper = ScreenshotService.ToRegion(72, 100, 100, 20, PageW, PageH);
+        var lower = ScreenshotService.ToRegion(72, 500, 100, 20, PageW, PageH);
 
         Assert.NotNull(upper);
         Assert.NotNull(lower);
-        Assert.True(upper!.Value.Top < lower!.Value.Top);
+        Assert.True(upper!.Value.Y < lower!.Value.Y);
     }
 
     [Fact]
-    public void ToPixelRect_Applies_Padding_On_Every_Side()
+    public void ToRegion_Applies_Padding_On_Every_Side()
     {
-        var rect = ScreenshotService.ToPixelRect(200, 200, 100, 50, PageBmpW, PageBmpH);
+        var region = ScreenshotService.ToRegion(200, 200, 100, 50, PageW, PageH);
 
-        Assert.NotNull(rect);
-        Assert.Equal((int)(200 * Scale) - Padding, rect!.Value.Left);
-        Assert.Equal((int)(200 * Scale) - Padding, rect.Value.Top);
-        Assert.Equal((int)(100 * Scale) + Padding * 2, rect.Value.Width);
-        Assert.Equal((int)(50 * Scale) + Padding * 2, rect.Value.Height);
+        Assert.NotNull(region);
+        Assert.Equal(200 - PaddingPt, region!.Value.X, 3);
+        Assert.Equal(200 - PaddingPt, region.Value.Y, 3);
+        Assert.Equal(100 + 2 * PaddingPt, region.Value.W, 3);
+        Assert.Equal(50 + 2 * PaddingPt, region.Value.H, 3);
     }
 
-    // --- ToPixelRect: clamping and degenerate input ---
+    // --- ToRegion: clamping and degenerate input ---
 
     [Fact]
-    public void ToPixelRect_Clamps_At_The_Top_Left_Corner()
+    public void ToRegion_Clamps_At_The_Top_Left_Corner()
     {
-        // Padding would push the origin negative; it must clamp to 0 instead.
-        var rect = ScreenshotService.ToPixelRect(0, 0, 50, 50, PageBmpW, PageBmpH);
+        var region = ScreenshotService.ToRegion(0, 0, 50, 50, PageW, PageH);
 
-        Assert.NotNull(rect);
-        Assert.Equal(0, rect!.Value.Left);
-        Assert.Equal(0, rect.Value.Top);
-    }
-
-    [Fact]
-    public void ToPixelRect_Clamps_At_The_Bottom_Right_Corner()
-    {
-        var rect = ScreenshotService.ToPixelRect(562, 742, 50, 50, PageBmpW, PageBmpH);
-
-        Assert.NotNull(rect);
-        Assert.True(rect!.Value.Right <= PageBmpW, $"Right={rect.Value.Right} exceeds {PageBmpW}");
-        Assert.True(rect.Value.Bottom <= PageBmpH, $"Bottom={rect.Value.Bottom} exceeds {PageBmpH}");
+        Assert.NotNull(region);
+        Assert.Equal(0, region!.Value.X);
+        Assert.Equal(0, region.Value.Y);
     }
 
     [Fact]
-    public void ToPixelRect_Clamps_A_Rect_Larger_Than_The_Page()
+    public void ToRegion_Clamps_At_The_Bottom_Right_Corner()
     {
-        var rect = ScreenshotService.ToPixelRect(0, 0, 5000, 5000, PageBmpW, PageBmpH);
+        var region = ScreenshotService.ToRegion(562, 742, 50, 50, PageW, PageH);
 
-        Assert.NotNull(rect);
-        Assert.True(rect!.Value.Right <= PageBmpW);
-        Assert.True(rect.Value.Bottom <= PageBmpH);
+        Assert.NotNull(region);
+        Assert.Equal(PageW, region!.Value.X + region.Value.W, 3);
+        Assert.Equal(PageH, region.Value.Y + region.Value.H, 3);
     }
 
     [Fact]
-    public void ToPixelRect_Returns_Null_For_A_Rect_Off_The_Page()
+    public void ToRegion_Clamps_A_Rect_Larger_Than_The_Page()
     {
-        Assert.Null(ScreenshotService.ToPixelRect(5000, 5000, 10, 10, PageBmpW, PageBmpH));
+        var region = ScreenshotService.ToRegion(0, 0, 5000, 5000, PageW, PageH);
+
+        Assert.Equal(new BBox(0, 0, (float)PageW, (float)PageH), region);
+    }
+
+    [Fact]
+    public void ToRegion_Returns_Null_For_A_Rect_Off_The_Page()
+    {
+        Assert.Null(ScreenshotService.ToRegion(5000, 5000, 10, 10, PageW, PageH));
     }
 
     // --- Freehand grouping (union-find, MergeDistancePt = 50) ---
@@ -264,30 +270,22 @@ public class ScreenshotServiceTests
         Assert.Null(ScreenshotService.GetGroupBounds([Stroke()], [0]));
     }
 
-    // --- CropAndSave (Tier 2: synthetic bitmap, still no pdfium) ---
+    // --- SavePng ---
 
     [Fact]
-    public void CropAndSave_Writes_The_Requested_Region()
+    public void SavePng_Writes_Packed_Rgb_Pixels_In_Place()
     {
-        // Left half white, right half red — so the crop's colour proves which region was taken.
-        using var source = new SKBitmap(200, 100);
-        using (var canvas = new SKCanvas(source))
-        {
-            canvas.Clear(SKColors.White);
-            using var paint = new SKPaint { Color = SKColors.Red };
-            canvas.DrawRect(new SKRect(100, 0, 200, 100), paint);
-        }
-
-        var path = Path.Combine(Path.GetTempPath(), $"railmark-crop-{Guid.NewGuid():N}.png");
+        // 2x1: a red pixel then a blue one, so a channel swap or a stride error shows.
+        var path = Path.Combine(Path.GetTempPath(), $"railmark-png-{Guid.NewGuid():N}.png");
         try
         {
-            ScreenshotService.CropAndSave(source, new SKRectI(100, 0, 200, 100), path);
+            ScreenshotService.SavePng([255, 0, 0, 0, 0, 255], 2, 1, path);
 
-            Assert.True(File.Exists(path));
             using var written = SKBitmap.Decode(path);
-            Assert.Equal(100, written.Width);
-            Assert.Equal(100, written.Height);
-            Assert.Equal(SKColors.Red, written.GetPixel(50, 50));
+            Assert.Equal(2, written.Width);
+            Assert.Equal(1, written.Height);
+            Assert.Equal(SKColors.Red, written.GetPixel(0, 0));
+            Assert.Equal(SKColors.Blue, written.GetPixel(1, 0));
         }
         finally
         {
@@ -305,7 +303,7 @@ public class ScreenshotServiceTests
     {
         // The fake page is red across its top eighth (0..99pt of 792pt), so an annotation at
         // y=20 must yield a red crop. Before the issue #22 fix this cropped the white bottom.
-        using var pdf = new FakePdfService();
+        var pdf = new FakeRegionPdfService();
         var file = FileWith(new RectAnnotation { Color = "#00F", X = 100, Y = 20, W = 200, H = 40 });
         var dir = NewImageDir();
 
@@ -326,7 +324,7 @@ public class ScreenshotServiceTests
     [Fact]
     public async Task CropAnnotations_Crops_A_Bottom_Of_Page_Rect_From_The_Bottom_Of_The_Page()
     {
-        using var pdf = new FakePdfService();
+        var pdf = new FakeRegionPdfService();
         var file = FileWith(new RectAnnotation { Color = "#00F", X = 100, Y = 700, W = 200, H = 40 });
         var dir = NewImageDir();
 
@@ -346,7 +344,7 @@ public class ScreenshotServiceTests
     [Fact]
     public async Task CropAnnotations_Gives_Merged_Freehand_Strokes_One_Shared_Image()
     {
-        using var pdf = new FakePdfService();
+        var pdf = new FakeRegionPdfService();
         var file = FileWith(
             Stroke((100, 100), (110, 110)),   // these two are ~14pt apart
             Stroke((120, 120), (130, 130)),
@@ -370,10 +368,59 @@ public class ScreenshotServiceTests
     }
 
     [Fact]
+    public async Task CropAnnotations_Renders_Only_The_Padded_Annotation_Region_At_300_Dpi()
+    {
+        // The fake refuses whole-page renders, so getting an image at all proves none was made.
+        var pdf = new FakeRegionPdfService();
+        var file = FileWith(new RectAnnotation { Color = "#00F", X = 100, Y = 300, W = 200, H = 40 });
+        var dir = NewImageDir();
+
+        try
+        {
+            var images = await ScreenshotService.CropAnnotationsAsync(pdf, file, dir);
+
+            Assert.Single(images);
+            var (region, scale) = Assert.Single(pdf.Requests);
+            Assert.Equal(Scale, scale, 6);
+            Assert.Equal(ScreenshotService.ToRegion(100, 300, 200, 40, PageW, PageH), region);
+
+            using var cropped = SKBitmap.Decode(images[(0, 0)]);
+            // Region-sized, not page-sized (the page is 2550 px wide at this scale).
+            var expectedWidth = (int)Math.Ceiling((200 + 2 * PaddingPt) * Scale);
+            Assert.InRange(cropped.Width, expectedWidth - 1, expectedWidth + 1);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CropAnnotations_Works_On_A_Backend_Without_Region_Rendering()
+    {
+        // Core's fallback renders the page and crops; the crop must still come from the right place.
+        var pdf = new FakePdfService();
+        var file = FileWith(new RectAnnotation { Color = "#00F", X = 100, Y = 20, W = 200, H = 40 });
+        var dir = NewImageDir();
+
+        try
+        {
+            var images = await ScreenshotService.CropAnnotationsAsync(pdf, file, dir);
+
+            using var cropped = SKBitmap.Decode(Assert.Single(images).Value);
+            Assert.Equal(SKColors.Red, cropped.GetPixel(cropped.Width / 2, cropped.Height / 2));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CropAnnotations_Ignores_Annotations_With_No_Screenshot()
     {
         // Highlights and notes are rendered as text, not images.
-        using var pdf = new FakePdfService();
+        var pdf = new FakeRegionPdfService();
         var file = FileWith(
             new HighlightAnnotation { Color = "#FF0", Rects = [new(50, 50, 100, 10)] },
             new TextNoteAnnotation { Color = "#FF0", X = 10, Y = 10, Text = "note" });
