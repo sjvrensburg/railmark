@@ -1,6 +1,5 @@
 using RailReader.Core.Models;
 using RailReader.Core.Services;
-using RailReader.Renderer.Skia;
 using SkiaSharp;
 
 namespace RailMark.Services;
@@ -9,14 +8,17 @@ public static class ScreenshotService
 {
     private const int RenderDpi = 300;
     private const double PdfPointsPerInch = 72.0;
-    private static readonly double Scale = RenderDpi / PdfPointsPerInch;
-    private const int PaddingPx = 40;
+    private const double Scale = RenderDpi / PdfPointsPerInch;
+    // Margin around each annotation: 40 px at 300 dpi, as when crops were cut from a page render.
+    private const double PaddingPt = 40 / Scale;
 
     // PDF-point distance within which freehand strokes are merged into one screenshot.
     private const double MergeDistancePt = 50.0;
 
     /// <summary>
-    /// Renders the required pages via <paramref name="pdf"/> and crops annotation areas.
+    /// Renders each annotation's area via <paramref name="pdf"/> — only that area, not the whole
+    /// page (<see cref="PdfRegionRendering.RenderRegionPixmap"/>, which falls back to rendering
+    /// the page and cropping on a backend without region rendering).
     /// Freehand annotations on the same page are grouped when spatially close,
     /// producing one combined screenshot per group.
     /// Returns a mapping of (0-based pageIndex, annotationIndex) → saved image path.
@@ -50,41 +52,38 @@ public static class ScreenshotService
             if (rectIndices.Count == 0 && freehandIndices.Count == 0)
                 continue;
 
-            using var rendered = pdf.RenderPage(pageIdx, RenderDpi);
-            if (rendered is not SkiaRenderedPage skiaPage) continue;
-            var bitmap = skiaPage.Bitmap;
+            var (pageW, pageH) = pdf.GetPageSize(pageIdx);
+
+            string? RenderCrop(float x, float y, float w, float h)
+            {
+                var region = ToRegion(x, y, w, h, pageW, pageH);
+                if (region == null) return null;
+
+                var (rgb, pxW, pxH) = pdf.RenderRegionPixmap(pageIdx, region.Value, Scale);
+                imageCounter++;
+                var outPath = Path.Combine(imageDir, $"annotation_{imageCounter:D3}.png");
+                SavePng(rgb, pxW, pxH, outPath);
+                return outPath;
+            }
 
             // Rect annotations: one crop per annotation
             foreach (var i in rectIndices)
             {
                 var rect = (RectAnnotation)annotations[i];
-                var pxRect = ToPixelRect(rect.X, rect.Y, rect.W, rect.H, bitmap.Width, bitmap.Height);
-                if (pxRect == null) continue;
-
-                imageCounter++;
-                var outPath = Path.Combine(imageDir, $"annotation_{imageCounter:D3}.png");
-                CropAndSave(bitmap, pxRect.Value, outPath);
-                result[(pageIdx, i)] = outPath;
+                if (RenderCrop(rect.X, rect.Y, rect.W, rect.H) is { } path)
+                    result[(pageIdx, i)] = path;
             }
 
             // Freehand annotations: group spatially close strokes, one crop per group
-            var groups = GroupFreehandAnnotations(annotations, freehandIndices);
-
-            foreach (var group in groups)
+            foreach (var group in GroupFreehandAnnotations(annotations, freehandIndices))
             {
                 var bounds = GetGroupBounds(annotations, group);
                 if (bounds == null) continue;
 
-                var pxRect = ToPixelRect(bounds.Value.x, bounds.Value.y,
-                    bounds.Value.w, bounds.Value.h, bitmap.Width, bitmap.Height);
-                if (pxRect == null) continue;
-
-                imageCounter++;
-                var outPath = Path.Combine(imageDir, $"annotation_{imageCounter:D3}.png");
-                CropAndSave(bitmap, pxRect.Value, outPath);
-
+                if (RenderCrop(bounds.Value.x, bounds.Value.y, bounds.Value.w, bounds.Value.h) is not { } path)
+                    continue;
                 foreach (var i in group)
-                    result[(pageIdx, i)] = outPath;
+                    result[(pageIdx, i)] = path;
             }
         }
 
@@ -161,33 +160,38 @@ public static class ScreenshotService
         return any ? (minX, minY, maxX - minX, maxY - minY) : null;
     }
 
-    internal static SKRectI? ToPixelRect(float x, float y, float w, float h, int bmpW, int bmpH)
+    /// <summary>
+    /// The page region to render for an annotation box: padded by <see cref="PaddingPt"/> on every
+    /// side and clamped to the page, or null when nothing of it lies on the page.
+    /// </summary>
+    internal static BBox? ToRegion(float x, float y, float w, float h, double pageW, double pageH)
     {
         // Annotation coordinates are top-down: CompositeAnnotationStore converts out of the PDF's
-        // bottom-up space when it loads them, and the bitmap is top-down too, so this is a plain
-        // scale. It previously flipped the y-axis here, which mirrored every crop vertically
-        // (issue #22) — the flip had already been applied by the store.
-        var px = (int)(x * Scale) - PaddingPx;
-        var py = (int)(y * Scale) - PaddingPx;
-        var pw = (int)(w * Scale) + PaddingPx * 2;
-        var ph = (int)(h * Scale) + PaddingPx * 2;
+        // bottom-up space when it loads them, which is also the space the region renderer takes,
+        // so no flip. ToPixelRect once flipped here as well, which mirrored every crop vertically
+        // (issue #22).
+        double left = Math.Max(0, x - PaddingPt), top = Math.Max(0, y - PaddingPt);
+        double right = Math.Min(pageW, x + w + PaddingPt), bottom = Math.Min(pageH, y + h + PaddingPt);
 
-        px = Math.Max(0, px);
-        py = Math.Max(0, py);
-        pw = Math.Min(pw, bmpW - px);
-        ph = Math.Min(ph, bmpH - py);
-
-        return pw > 0 && ph > 0 ? new SKRectI(px, py, px + pw, py + ph) : null;
+        return right > left && bottom > top
+            ? new BBox((float)left, (float)top, (float)(right - left), (float)(bottom - top))
+            : null;
     }
 
-    internal static void CropAndSave(SKBitmap source, SKRectI rect, string outputPath)
+    /// <summary>Writes packed RGB (3 bytes per pixel, as the region renderer returns it) as a PNG.</summary>
+    internal static void SavePng(byte[] rgb, int width, int height, string outputPath)
     {
-        using var cropped = new SKBitmap(rect.Width, rect.Height);
-        using var canvas = new SKCanvas(cropped);
-        canvas.DrawBitmap(source, rect, new SKRect(0, 0, rect.Width, rect.Height));
-        canvas.Flush();
+        var rgba = new byte[width * height * 4];
+        for (int src = 0, dst = 0; src < width * height * 3; src += 3, dst += 4)
+        {
+            rgba[dst] = rgb[src];
+            rgba[dst + 1] = rgb[src + 1];
+            rgba[dst + 2] = rgb[src + 2];
+            rgba[dst + 3] = 255;
+        }
 
-        using var image = SKImage.FromBitmap(cropped);
+        var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
+        using var image = SKImage.FromPixelCopy(info, rgba, width * 4);
         using var data = image.Encode(SKEncodedImageFormat.Png, 90);
         using var stream = File.OpenWrite(outputPath);
         data.SaveTo(stream);
